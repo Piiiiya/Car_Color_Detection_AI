@@ -1,235 +1,432 @@
 
-import cv2
+import sys
 from pathlib import Path
+
+import cv2
+import numpy as np
+
+# ============================================================
+# PROJECT PATHS
+# ============================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+SRC_DIR = PROJECT_ROOT / "src"
+OUTPUT_DIR = PROJECT_ROOT / "outputs"
+
+MODEL_PATH = PROJECT_ROOT / "yolo26s.pt"
+
+OUTPUT_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+DEBUG_IMAGE_PATH = (
+    OUTPUT_DIR / "debug_detection.jpg"
+)
+
+# ============================================================
+# IMPORT DETECTOR
+# ============================================================
+
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from detector import VehicleDetector
 
 
-# =========================================================
-# PROJECT PATHS
-# =========================================================
+# ============================================================
+# FIND INPUT IMAGE
+# ============================================================
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
+def find_test_image():
 
-IMAGE_PATH = (
-    PROJECT_DIR
-    / "data"
-    / "raw"
-    / "traffic_test.jpg"
-)
+    """
+    Search common project folders for an image.
 
-MODEL_PATH = PROJECT_DIR / "yolo26s.pt"
+    If a specific image is preferred, replace this function
+    with a direct path to that image.
+    """
 
-OUTPUT_DIR = PROJECT_DIR / "outputs"
+    search_directories = [
+        PROJECT_ROOT / "data" / "test",
+        PROJECT_ROOT / "data" / "raw",
+        PROJECT_ROOT / "data",
+        PROJECT_ROOT / "images",
+        PROJECT_ROOT / "test_images",
+    ]
 
-OUTPUT_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
+    supported_extensions = [
+        "*.jpg",
+        "*.jpeg",
+        "*.png",
+        "*.webp",
+        "*.bmp",
+    ]
 
-OUTPUT_PATH = OUTPUT_DIR / "detection_debug.jpg"
+    for directory in search_directories:
 
+        if not directory.exists():
+            continue
 
-# =========================================================
-# LOAD IMAGE
-# =========================================================
+        for extension in supported_extensions:
 
-image = cv2.imread(str(IMAGE_PATH))
+            images = sorted(
+                directory.rglob(extension)
+            )
 
-if image is None:
+            if images:
+                return images[0]
+
     raise FileNotFoundError(
-        f"Could not load image: {IMAGE_PATH}"
+        "No test image found. Please place a traffic image "
+        "inside data/test or update the image path."
     )
 
-print("Image loaded successfully.")
-print("Image dimensions:", image.shape)
 
+# ============================================================
+# DRAW DETECTION BOXES
+# ============================================================
 
-# =========================================================
-# INITIALIZE DETECTOR
-# =========================================================
-
-detector = VehicleDetector(
-    model_path=str(MODEL_PATH)
-)
-
-
-# =========================================================
-# RUN DETECTION
-# =========================================================
-
-results = detector.detect(image)
-
-cars = results["cars"]
-people = results["people"]
-
-print("\n" + "=" * 55)
-print("DETECTION TEST RESULTS")
-print("=" * 55)
-
-print(f"Cars detected: {len(cars)}")
-print(f"People detected: {len(people)}")
-
-
-# =========================================================
-# DRAW DETECTIONS
-# =========================================================
-
-debug_image = image.copy()
-
-
-def draw_box(
+def draw_detections(
     image,
-    box,
-    label,
+    detections,
     color,
-    thickness=3
+    label,
 ):
 
-    x1, y1, x2, y2 = box
+    """
+    Draw bounding boxes and confidence labels.
+    """
 
-    cv2.rectangle(
-        image,
-        (x1, y1),
-        (x2, y2),
-        color,
-        thickness
-    )
+    output = image.copy()
 
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.65
-    text_thickness = 2
+    for detection in detections:
 
-    (text_width, text_height), baseline = (
-        cv2.getTextSize(
-            label,
-            font,
-            font_scale,
-            text_thickness
+        x1, y1, x2, y2 = detection["bbox"]
+
+        confidence = detection["confidence"]
+
+        text = (
+            f"{label} {confidence:.2f}"
         )
+
+        # Bounding box
+        cv2.rectangle(
+            output,
+            (x1, y1),
+            (x2, y2),
+            color,
+            3,
+        )
+
+        # Text background
+        (text_width, text_height), baseline = (
+            cv2.getTextSize(
+                text,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                2,
+            )
+        )
+
+        text_y = max(
+            y1,
+            text_height + 10,
+        )
+
+        cv2.rectangle(
+            output,
+            (
+                x1,
+                text_y - text_height - 8,
+            ),
+            (
+                x1 + text_width + 8,
+                text_y + baseline,
+            ),
+            color,
+            -1,
+        )
+
+        # Label
+        cv2.putText(
+            output,
+            text,
+            (x1 + 4, text_y - 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    return output
+
+
+# ============================================================
+# MAIN TEST
+# ============================================================
+
+def main():
+
+    print("\n" + "=" * 60)
+    print("CAR COLOR DETECTION AI - DETECTOR TEST")
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # Check model
+    # --------------------------------------------------------
+
+    if not MODEL_PATH.exists():
+
+        raise FileNotFoundError(
+            f"YOLO model not found: {MODEL_PATH}"
+        )
+
+    # --------------------------------------------------------
+    # Load image
+    # --------------------------------------------------------
+
+    image_path = find_test_image()
+
+    image = cv2.imread(
+        str(image_path)
     )
 
-    label_y = max(
-        y1,
-        text_height + 10
+    if image is None:
+
+        raise ValueError(
+            f"Unable to load image: {image_path}"
+        )
+
+    height, width = image.shape[:2]
+
+    print("\nImage loaded successfully.")
+    print(f"Image path: {image_path}")
+    print(
+        f"Image dimensions: "
+        f"({height}, {width}, 3)"
+    )
+
+    # --------------------------------------------------------
+    # Initialize detector
+    # --------------------------------------------------------
+
+    detector = VehicleDetector(
+        model_path=str(MODEL_PATH),
+        device="cpu",
+    )
+
+    # --------------------------------------------------------
+    # Run detection
+    # --------------------------------------------------------
+
+    print("\nRunning detection...")
+
+    results = detector.detect_all(image)
+
+    # --------------------------------------------------------
+    # Extract results
+    # --------------------------------------------------------
+
+    cars = results["cars"]
+
+    people = results["people"]
+
+    traffic_lights = results["traffic_lights"]
+
+    car_count = results["car_count"]
+
+    people_count = results["people_count"]
+
+    traffic_light_count = (
+        results["traffic_light_count"]
+    )
+
+    # --------------------------------------------------------
+    # Print summary
+    # --------------------------------------------------------
+
+    print("\n" + "=" * 60)
+    print("DETECTION TEST RESULTS")
+    print("=" * 60)
+
+    print(f"Cars detected: {car_count}")
+
+    print(f"People detected: {people_count}")
+
+    print(
+        f"Traffic lights detected: "
+        f"{traffic_light_count}"
+    )
+
+    # --------------------------------------------------------
+    # Car details
+    # --------------------------------------------------------
+
+    print("\n" + "-" * 60)
+    print("CAR DETAILS")
+    print("-" * 60)
+
+    if cars:
+
+        for index, car in enumerate(
+            cars,
+            start=1,
+        ):
+
+            print(
+                f"Car {index}: "
+                f"BBox={car['bbox']}, "
+                f"Confidence={car['confidence']:.2f}"
+            )
+
+    else:
+        print("No cars detected.")
+
+    # --------------------------------------------------------
+    # Person details
+    # --------------------------------------------------------
+
+    print("\n" + "-" * 60)
+    print("PERSON DETAILS")
+    print("-" * 60)
+
+    if people:
+
+        for index, person in enumerate(
+            people,
+            start=1,
+        ):
+
+            print(
+                f"Person {index}: "
+                f"BBox={person['bbox']}, "
+                f"Confidence={person['confidence']:.2f}"
+            )
+
+    else:
+        print("No people detected.")
+
+    # --------------------------------------------------------
+    # Traffic light details
+    # --------------------------------------------------------
+
+    print("\n" + "-" * 60)
+    print("TRAFFIC LIGHT DETAILS")
+    print("-" * 60)
+
+    if traffic_lights:
+
+        for index, light in enumerate(
+            traffic_lights,
+            start=1,
+        ):
+
+            print(
+                f"Traffic light {index}: "
+                f"BBox={light['bbox']}, "
+                f"Confidence={light['confidence']:.2f}"
+            )
+
+    else:
+        print("No traffic lights detected.")
+
+    # --------------------------------------------------------
+    # Draw boxes
+    # --------------------------------------------------------
+
+    output_image = image.copy()
+
+    # Cars: blue boxes
+    output_image = draw_detections(
+        output_image,
+        cars,
+        color=(255, 0, 0),
+        label="Car",
+    )
+
+    # People: green boxes
+    output_image = draw_detections(
+        output_image,
+        people,
+        color=(0, 255, 0),
+        label="Person",
+    )
+
+    # Traffic lights: yellow boxes
+    output_image = draw_detections(
+        output_image,
+        traffic_lights,
+        color=(0, 255, 255),
+        label="Traffic Light",
+    )
+
+    # --------------------------------------------------------
+    # Add summary to image
+    # --------------------------------------------------------
+
+    summary = (
+        f"Cars: {car_count} | "
+        f"People: {people_count} | "
+        f"Traffic Lights: {traffic_light_count}"
     )
 
     cv2.rectangle(
-        image,
-        (
-            x1,
-            label_y - text_height - 10
-        ),
-        (
-            x1 + text_width + 8,
-            label_y + baseline
-        ),
-        color,
-        -1
+        output_image,
+        (10, 10),
+        (min(width - 10, 900), 65),
+        (30, 30, 30),
+        -1,
     )
 
     cv2.putText(
-        image,
-        label,
-        (x1 + 4, label_y - 4),
-        font,
-        font_scale,
+        output_image,
+        summary,
+        (20, 48),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.85,
         (255, 255, 255),
-        text_thickness,
-        cv2.LINE_AA
+        2,
+        cv2.LINE_AA,
     )
 
+    # --------------------------------------------------------
+    # Save debug image
+    # --------------------------------------------------------
 
-# ---------------------------------------------------------
-# DRAW CARS
-# ---------------------------------------------------------
-
-for index, car in enumerate(cars, 1):
-
-    confidence = car["confidence"] * 100
-
-    label = (
-        f"Car {index} "
-        f"{confidence:.1f}%"
+    success = cv2.imwrite(
+        str(DEBUG_IMAGE_PATH),
+        output_image,
     )
 
-    # Blue in OpenCV BGR
-    draw_box(
-        debug_image,
-        car["box"],
-        label,
-        (255, 0, 0),
-        thickness=4
-    )
+    if success:
+
+        print("\nDebug image saved successfully:")
+        print(DEBUG_IMAGE_PATH)
+
+    else:
+
+        print("\nWARNING: Could not save debug image.")
+
+    # --------------------------------------------------------
+    # Final status
+    # --------------------------------------------------------
+
+    print("\n" + "=" * 60)
+    print("TEST COMPLETED")
+    print("=" * 60)
 
 
-# ---------------------------------------------------------
-# DRAW PEOPLE
-# ---------------------------------------------------------
+if __name__ == "__main__":
 
-for index, person in enumerate(people, 1):
+    try:
+        main()
 
-    confidence = person["confidence"] * 100
+    except Exception as error:
 
-    label = (
-        f"Person {index} "
-        f"{confidence:.1f}%"
-    )
+        print("\nTEST FAILED")
+        print(f"Error: {error}")
 
-    # Green in OpenCV BGR
-    draw_box(
-        debug_image,
-        person["box"],
-        label,
-        (0, 255, 0),
-        thickness=2
-    )
-
-
-# =========================================================
-# SUMMARY PANEL
-# =========================================================
-
-summary = (
-    f"Cars: {len(cars)} | "
-    f"People: {len(people)}"
-)
-
-cv2.rectangle(
-    debug_image,
-    (15, 15),
-    (650, 75),
-    (30, 30, 30),
-    -1
-)
-
-cv2.putText(
-    debug_image,
-    summary,
-    (30, 55),
-    cv2.FONT_HERSHEY_SIMPLEX,
-    1.0,
-    (255, 255, 255),
-    2,
-    cv2.LINE_AA
-)
-
-
-# =========================================================
-# SAVE DEBUG IMAGE
-# =========================================================
-
-saved = cv2.imwrite(
-    str(OUTPUT_PATH),
-    debug_image
-)
-
-if not saved:
-    raise RuntimeError(
-        "Failed to save detection debug image."
-    )
-
-print("\nDebug image saved successfully:")
-print(OUTPUT_PATH)
-
-print("\nTest completed.")
+        raise

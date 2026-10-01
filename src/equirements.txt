@@ -1,7 +1,0 @@
-
-streamlit
-tensorflow==2.21.0
-ultralytics
-opencv-python-headless
-numpy
-Pillow
