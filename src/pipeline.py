@@ -257,48 +257,83 @@ class CarColorPipeline:
 
     # =========================================================
     # EXTRACT MAIN YOLO DETECTIONS
+    # FIXED: SUPPORTS SINGLE RESULTS AND RESULT LISTS
     # =========================================================
 
     def _extract_main_detections(self, result):
 
         detections = []
 
-        if result is None or result.boxes is None:
+        if result is None:
             return detections
 
-        boxes = result.boxes.xyxy.cpu().numpy()
-        confs = result.boxes.conf.cpu().numpy()
-        classes = result.boxes.cls.cpu().numpy().astype(int)
+        # YOLO may return a single Results object
+        # or a list/tuple of Results objects.
 
-        names = result.names
+        if isinstance(result, (list, tuple)):
+            results = result
+        else:
+            results = [result]
 
-        for box, confidence, class_id in zip(
-            boxes,
-            confs,
-            classes
-        ):
+        for single_result in results:
 
-            x1, y1, x2, y2 = box.astype(int)
+            if single_result is None:
+                continue
 
-            if isinstance(names, dict):
-                class_name = names.get(
-                    int(class_id),
-                    str(class_id)
-                )
-            else:
-                class_name = names[int(class_id)]
+            boxes_object = getattr(
+                single_result,
+                "boxes",
+                None
+            )
 
-            detections.append({
-                "box": (
-                    int(x1),
-                    int(y1),
-                    int(x2),
-                    int(y2)
-                ),
-                "confidence": float(confidence),
-                "class_id": int(class_id),
-                "class_name": str(class_name).lower()
-            })
+            if boxes_object is None:
+                continue
+
+            boxes = boxes_object.xyxy.cpu().numpy()
+            confs = boxes_object.conf.cpu().numpy()
+            classes = (
+                boxes_object.cls
+                .cpu()
+                .numpy()
+                .astype(int)
+            )
+
+            names = getattr(
+                single_result,
+                "names",
+                {}
+            )
+
+            for box, confidence, class_id in zip(
+                boxes,
+                confs,
+                classes
+            ):
+
+                x1, y1, x2, y2 = box.astype(int)
+
+                if isinstance(names, dict):
+
+                    class_name = names.get(
+                        int(class_id),
+                        str(class_id)
+                    )
+
+                else:
+
+                    class_name = names[int(class_id)]
+
+                detections.append({
+                    "box": (
+                        int(x1),
+                        int(y1),
+                        int(x2),
+                        int(y2)
+                    ),
+                    "confidence": float(confidence),
+                    "class_id": int(class_id),
+                    "class_name": str(class_name).lower()
+                })
 
         return detections
 
@@ -333,9 +368,11 @@ class CarColorPipeline:
         )
 
         if success:
+
             print(
                 f"Debug crop saved: {filepath}"
             )
+
             return filepath
 
         print(
@@ -352,6 +389,7 @@ class CarColorPipeline:
     def _safe_float(value, default=0.0):
 
         try:
+
             value = float(value)
 
             if not np.isfinite(value):
@@ -360,6 +398,7 @@ class CarColorPipeline:
             return value
 
         except (TypeError, ValueError):
+
             return default
 
     # =========================================================
@@ -412,7 +451,7 @@ class CarColorPipeline:
         )
 
         # -----------------------------------------------------
-        # EXTRACT TRAFFIC LIGHT DETECTIONS
+        # EXTRACT TRAFFIC LIGHT AND MAIN DETECTIONS
         # -----------------------------------------------------
 
         main_detections = (
@@ -422,9 +461,8 @@ class CarColorPipeline:
         )
 
         # Add full-image and tiled car detections
-        main_detections.extend(
-            car_detections
-        )
+        if isinstance(car_detections, list):
+            main_detections.extend(car_detections)
 
         # -----------------------------------------------------
         # COUNTERS
@@ -443,6 +481,9 @@ class CarColorPipeline:
 
         for detection in main_detections:
 
+            if not isinstance(detection, dict):
+                continue
+
             class_name = str(
                 detection.get(
                     "class_name",
@@ -456,6 +497,9 @@ class CarColorPipeline:
                     0.0
                 )
             )
+
+            if "box" not in detection:
+                continue
 
             x1, y1, x2, y2 = detection["box"]
 

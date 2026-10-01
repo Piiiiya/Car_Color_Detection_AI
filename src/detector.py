@@ -12,6 +12,13 @@ class VehicleDetector:
     CAR_CLASS = 2
     TRAFFIC_LIGHT_CLASS = 9
 
+    # COCO class names
+    CLASS_NAMES = {
+        0: "person",
+        2: "car",
+        9: "traffic light"
+    }
+
     def __init__(
         self,
         model_path="yolo26s.pt",
@@ -74,76 +81,99 @@ class VehicleDetector:
 
         detections = []
 
-        if not results:
+        if results is None:
             return detections
 
-        result = results[0]
+        # Handle a single result or a list of results
+        if isinstance(results, (list, tuple)):
+            result_list = results
+        else:
+            result_list = [results]
 
-        if result.boxes is None:
-            return detections
+        for result in result_list:
 
-        for box in result.boxes:
-
-            class_id = int(
-                box.cls[0].item()
-            )
-
-            if class_id != target_class:
+            if result is None:
                 continue
 
-            confidence = float(
-                box.conf[0].item()
+            boxes = getattr(
+                result,
+                "boxes",
+                None
             )
 
-            coordinates = (
-                box.xyxy[0]
-                .cpu()
-                .numpy()
-            )
-
-            x1, y1, x2, y2 = map(
-                int,
-                coordinates
-            )
-
-            # Keep coordinates inside image boundaries
-            x1 = max(
-                0,
-                min(x1, image_width - 1)
-            )
-
-            y1 = max(
-                0,
-                min(y1, image_height - 1)
-            )
-
-            x2 = max(
-                0,
-                min(x2, image_width)
-            )
-
-            y2 = max(
-                0,
-                min(y2, image_height)
-            )
-
-            if x2 <= x1 or y2 <= y1:
+            if boxes is None:
                 continue
 
-            detections.append({
+            for box in boxes:
 
-                "box": [
-                    x1,
-                    y1,
-                    x2,
-                    y2
-                ],
+                class_id = int(
+                    box.cls[0].item()
+                )
 
-                "confidence": confidence,
+                if class_id != target_class:
+                    continue
 
-                "class_id": class_id
+                confidence = float(
+                    box.conf[0].item()
+                )
 
-            })
+                coordinates = (
+                    box.xyxy[0]
+                    .cpu()
+                    .numpy()
+                )
+
+                x1, y1, x2, y2 = map(
+                    int,
+                    coordinates
+                )
+
+                # Keep coordinates inside image boundaries
+                x1 = max(
+                    0,
+                    min(x1, image_width - 1)
+                )
+
+                y1 = max(
+                    0,
+                    min(y1, image_height - 1)
+                )
+
+                x2 = max(
+                    0,
+                    min(x2, image_width)
+                )
+
+                y2 = max(
+                    0,
+                    min(y2, image_height)
+                )
+
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                # FIX: Include class_name
+                class_name = VehicleDetector.CLASS_NAMES.get(
+                    class_id,
+                    str(class_id)
+                )
+
+                detections.append({
+
+                    "box": [
+                        x1,
+                        y1,
+                        x2,
+                        y2
+                    ],
+
+                    "confidence": confidence,
+
+                    "class_id": class_id,
+
+                    "class_name": class_name
+
+                })
 
         return detections
 
@@ -466,6 +496,10 @@ class VehicleDetector:
 
             filtered.append(detection)
 
+        print(
+            f"Car detections: {len(filtered)}"
+        )
+
         return filtered
 
     # =========================================================
@@ -640,6 +674,10 @@ class VehicleDetector:
 
             filtered.append(detection)
 
+        print(
+            f"Person detections: {len(filtered)}"
+        )
+
         return filtered
 
     # =========================================================
@@ -690,18 +728,21 @@ class VehicleDetector:
 
         image_height, image_width = image.shape[:2]
 
+        # Detect cars
         cars = self._detect_cars(
             image,
             image_width,
             image_height
         )
 
+        # Detect people
         people = self._detect_people(
             image,
             image_width,
             image_height
         )
 
+        # Detect traffic lights
         main_result = self._detect_traffic_lights(
             image
         )
