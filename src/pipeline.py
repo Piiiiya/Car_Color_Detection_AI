@@ -1,4 +1,5 @@
-from pathlib import Path
+
+import os
 import cv2
 import numpy as np
 
@@ -9,9 +10,21 @@ class CarColorPipeline:
         self.detector = detector
         self.classifier = classifier
 
+        # Debug crop directory
+        self.debug_dir = os.path.join(
+            "outputs",
+            "debug_crops"
+        )
+
+        os.makedirs(
+            self.debug_dir,
+            exist_ok=True
+        )
+
     # =========================================================
     # DRAW TEXT WITH BACKGROUND
     # =========================================================
+
     @staticmethod
     def _draw_label(
         image,
@@ -22,6 +35,7 @@ class CarColorPipeline:
         font_scale=0.55,
         thickness=2
     ):
+
         font = cv2.FONT_HERSHEY_SIMPLEX
 
         (text_w, text_h), baseline = cv2.getTextSize(
@@ -64,16 +78,12 @@ class CarColorPipeline:
     # =========================================================
     # DRAW PERSON
     # =========================================================
-    def _draw_person(
-        self,
-        image,
-        person
-    ):
+
+    def _draw_person(self, image, person):
 
         x1, y1, x2, y2 = person["box"]
         confidence = person["confidence"]
 
-        # Green box for people
         color = (0, 180, 0)
 
         cv2.rectangle(
@@ -97,6 +107,7 @@ class CarColorPipeline:
     # =========================================================
     # DRAW TRAFFIC LIGHT
     # =========================================================
+
     def _draw_traffic_light(
         self,
         image,
@@ -106,7 +117,6 @@ class CarColorPipeline:
 
         x1, y1, x2, y2 = box
 
-        # Yellow box for traffic lights
         color = (0, 255, 255)
 
         cv2.rectangle(
@@ -133,6 +143,7 @@ class CarColorPipeline:
     # =========================================================
     # DRAW CAR
     # =========================================================
+
     def _draw_car(
         self,
         image,
@@ -143,10 +154,8 @@ class CarColorPipeline:
 
         x1, y1, x2, y2 = box
 
-        # Requirement:
-        #
-        # BLUE CAR  -> RED rectangle
-        # OTHER CAR -> BLUE rectangle
+        # Blue car -> red rectangle
+        # Other car -> blue rectangle
 
         if color_name.lower() == "blue":
             box_color = (0, 0, 255)
@@ -163,7 +172,7 @@ class CarColorPipeline:
 
         label = (
             f"car ({color_name}) "
-            f"{confidence * 100:.1f}%"
+            f"{confidence:.1f}%"
         )
 
         self._draw_label(
@@ -177,6 +186,7 @@ class CarColorPipeline:
     # =========================================================
     # DRAW SUMMARY PANEL
     # =========================================================
+
     def _draw_summary(
         self,
         image,
@@ -209,7 +219,6 @@ class CarColorPipeline:
             -1
         )
 
-        # Slight transparency
         cv2.addWeighted(
             overlay,
             0.78,
@@ -249,37 +258,17 @@ class CarColorPipeline:
     # =========================================================
     # EXTRACT MAIN YOLO DETECTIONS
     # =========================================================
-    def _extract_main_detections(
-        self,
-        result
-    ):
+
+    def _extract_main_detections(self, result):
 
         detections = []
 
-        if result is None:
+        if result is None or result.boxes is None:
             return detections
 
-        if result.boxes is None:
-            return detections
-
-        boxes = (
-            result.boxes.xyxy
-            .cpu()
-            .numpy()
-        )
-
-        confs = (
-            result.boxes.conf
-            .cpu()
-            .numpy()
-        )
-
-        classes = (
-            result.boxes.cls
-            .cpu()
-            .numpy()
-            .astype(int)
-        )
+        boxes = result.boxes.xyxy.cpu().numpy()
+        confs = result.boxes.conf.cpu().numpy()
+        classes = result.boxes.cls.cpu().numpy().astype(int)
 
         names = result.names
 
@@ -289,9 +278,7 @@ class CarColorPipeline:
             classes
         ):
 
-            x1, y1, x2, y2 = (
-                box.astype(int)
-            )
+            x1, y1, x2, y2 = box.astype(int)
 
             if isinstance(names, dict):
                 class_name = names.get(
@@ -299,33 +286,86 @@ class CarColorPipeline:
                     str(class_id)
                 )
             else:
-                class_name = names[
-                    int(class_id)
-                ]
+                class_name = names[int(class_id)]
 
-            detections.append(
-                {
-                    "box": (
-                        int(x1),
-                        int(y1),
-                        int(x2),
-                        int(y2)
-                    ),
-                    "confidence": float(
-                        confidence
-                    ),
-                    "class_id": int(class_id),
-                    "class_name": str(
-                        class_name
-                    ).lower()
-                }
-            )
+            detections.append({
+                "box": (
+                    int(x1),
+                    int(y1),
+                    int(x2),
+                    int(y2)
+                ),
+                "confidence": float(confidence),
+                "class_id": int(class_id),
+                "class_name": str(class_name).lower()
+            })
 
         return detections
 
     # =========================================================
+    # SAVE DEBUG CROP
+    # =========================================================
+
+    def _save_debug_crop(
+        self,
+        crop,
+        car_number
+    ):
+
+        if crop is None or crop.size == 0:
+            return None
+
+        os.makedirs(
+            self.debug_dir,
+            exist_ok=True
+        )
+
+        filename = f"car_{car_number:03d}.jpg"
+
+        filepath = os.path.join(
+            self.debug_dir,
+            filename
+        )
+
+        success = cv2.imwrite(
+            filepath,
+            crop
+        )
+
+        if success:
+            print(
+                f"Debug crop saved: {filepath}"
+            )
+            return filepath
+
+        print(
+            f"Could not save debug crop: {filepath}"
+        )
+
+        return None
+
+    # =========================================================
+    # SAFE FLOAT CONVERSION
+    # =========================================================
+
+    @staticmethod
+    def _safe_float(value, default=0.0):
+
+        try:
+            value = float(value)
+
+            if not np.isfinite(value):
+                return default
+
+            return value
+
+        except (TypeError, ValueError):
+            return default
+
+    # =========================================================
     # MAIN PROCESS
     # =========================================================
+
     def process(self, image):
 
         if image is None:
@@ -333,60 +373,46 @@ class CarColorPipeline:
                 "Input image is None."
             )
 
-        if not isinstance(
-            image,
-            np.ndarray
-        ):
+        if not isinstance(image, np.ndarray):
             raise TypeError(
                 "Input image must be a NumPy array."
             )
 
-        # -----------------------------------------------------
-        # Make output copy
-        # -----------------------------------------------------
+        if image.size == 0:
+            raise ValueError(
+                "Input image is empty."
+            )
 
         output = image.copy()
 
         # -----------------------------------------------------
-        # Run detector
-        #
-        # New detector returns:
-        #
-        # {
-        #     "main_result": YOLO Results,
-        #     "people": [...]
-        # }
+        # RUN DETECTOR
         # -----------------------------------------------------
 
-        detection_result = (
-            self.detector.detect(image)
-        )
+        detection_result = self.detector.detect(image)
 
-        # Safety check
-        if not isinstance(
-            detection_result,
-            dict
-        ):
+        if not isinstance(detection_result, dict):
             raise TypeError(
                 "VehicleDetector.detect() "
                 "must return a dictionary."
             )
 
-        main_result = (
-            detection_result.get(
-                "main_result"
-            )
+        main_result = detection_result.get(
+            "main_result"
         )
 
-        people = (
-            detection_result.get(
-                "people",
-                []
-            )
+        car_detections = detection_result.get(
+            "cars",
+            []
+        )
+
+        people = detection_result.get(
+            "people",
+            []
         )
 
         # -----------------------------------------------------
-        # Extract cars / traffic lights
+        # EXTRACT TRAFFIC LIGHT DETECTIONS
         # -----------------------------------------------------
 
         main_detections = (
@@ -395,8 +421,13 @@ class CarColorPipeline:
             )
         )
 
+        # Add full-image and tiled car detections
+        main_detections.extend(
+            car_detections
+        )
+
         # -----------------------------------------------------
-        # Counters
+        # COUNTERS
         # -----------------------------------------------------
 
         cars = 0
@@ -407,26 +438,30 @@ class CarColorPipeline:
         car_details = []
 
         # -----------------------------------------------------
-        # PROCESS MAIN DETECTIONS
+        # PROCESS CARS AND TRAFFIC LIGHTS
         # -----------------------------------------------------
 
         for detection in main_detections:
 
-            class_name = detection[
-                "class_name"
-            ]
+            class_name = str(
+                detection.get(
+                    "class_name",
+                    ""
+                )
+            ).lower()
 
-            confidence = detection[
-                "confidence"
-            ]
+            confidence = self._safe_float(
+                detection.get(
+                    "confidence",
+                    0.0
+                )
+            )
 
-            x1, y1, x2, y2 = detection[
-                "box"
-            ]
+            x1, y1, x2, y2 = detection["box"]
 
-            # -------------------------------------------------
+            # ---------------------------------------------
             # TRAFFIC LIGHT
-            # -------------------------------------------------
+            # ---------------------------------------------
 
             if class_name in (
                 "traffic light",
@@ -449,9 +484,9 @@ class CarColorPipeline:
 
                 continue
 
-            # -------------------------------------------------
+            # ---------------------------------------------
             # CAR
-            # -------------------------------------------------
+            # ---------------------------------------------
 
             if class_name not in (
                 "car",
@@ -459,269 +494,13 @@ class CarColorPipeline:
             ):
                 continue
 
-            # Ignore extremely weak car detections
-            if confidence < 0.25:
-                continue
-
-            # -------------------------------------------------
-            # Validate box
-            # -------------------------------------------------
-
-            x1 = max(
-                0,
-                min(x1, image.shape[1] - 1)
-            )
-
-            y1 = max(
-                0,
-                min(y1, image.shape[0] - 1)
-            )
-
-            x2 = max(
-                0,
-                min(x2, image.shape[1])
-            )
-
-            y2 = max(
-                0,
-                min(y2, image.shape[0])
-            )
-
-            width = x2 - x1
-            height = y2 - y1
-
-            # Ignore tiny boxes
-            if width < 35 or height < 35:
-                continue
-
-            # -------------------------------------------------
-            # Crop car
-            # -------------------------------------------------
-
-            crop = image[
-                y1:y2,
-                x1:x2
-            ]
-
-            if crop.size == 0:
-                continue
-
-            # -------------------------------------------------
-            # Color prediction
-            # -------------------------------------------------
-
-            try:
-
-                color_result = (
-                    self.classifier.predict(
-                        crop
-                    )
-                )
-
-            except Exception as exc:
-
-                print(
-                    "Color prediction failed:",
-                    exc
-                )
-
-                color_result = {
-                    "color": "unknown",
-                    "confidence": 0.0,
-                    "pixel_color": "unknown",
-                    "pixel_confidence": 0.0,
-                    "cnn_color": "unknown",
-                    "cnn_confidence": 0.0,
-                    "reason": "Color prediction failed",
-                    "blue_pixel_percentage": 0.0,
-                    "black_pixel_percentage": 0.0,
-                    "blue_region_percentage": 0.0,
-                    "black_region_percentage": 0.0
-                }
-
-            # -------------------------------------------------
-            # Read classifier output safely
-            # -------------------------------------------------
-
-            color_name = str(
-                color_result.get(
-                    "color",
-                    "unknown"
-                )
-            ).lower()
-
-            color_confidence = float(
-                color_result.get(
-                    "confidence",
-                    0.0
-                )
-            )
-
-            pixel_color = str(
-                color_result.get(
-                    "pixel_color",
-                    "unknown"
-                )
-            )
-
-            pixel_confidence = float(
-                color_result.get(
-                    "pixel_confidence",
-                    0.0
-                )
-            )
-
-            cnn_color = str(
-                color_result.get(
-                    "cnn_color",
-                    "unknown"
-                )
-            )
-
-            cnn_confidence = float(
-                color_result.get(
-                    "cnn_confidence",
-                    0.0
-                )
-            )
-
-            reason = str(
-                color_result.get(
-                    "reason",
-                    ""
-                )
-            )
-
-            blue_pixel_percentage = float(
-                color_result.get(
-                    "blue_pixel_percentage",
-                    0.0
-                )
-            )
-
-            black_pixel_percentage = float(
-                color_result.get(
-                    "black_pixel_percentage",
-                    0.0
-                )
-            )
-
-            blue_region_percentage = float(
-                color_result.get(
-                    "blue_region_percentage",
-                    0.0
-                )
-            )
-
-            black_region_percentage = float(
-                color_result.get(
-                    "black_region_percentage",
-                    0.0
-                )
-            )
-
-            # -------------------------------------------------
-            # Count car
-            # -------------------------------------------------
-
-            cars += 1
-
-            if color_name == "blue":
-                blue_cars += 1
-            else:
-                other_cars += 1
-
-            # -------------------------------------------------
-            # Draw car
-            # -------------------------------------------------
-
-            self._draw_car(
-                output,
-                (
-                    x1,
-                    y1,
-                    x2,
-                    y2
-                ),
-                color_name,
-                color_confidence
-            )
-
-            # -------------------------------------------------
-            # Save details
-            # -------------------------------------------------
-
-            car_details.append(
-                {
-                    "Car": cars,
-                    "Color": color_name,
-                    "Confidence": round(
-                        color_confidence * 100,
-                        2
-                    ),
-                    "Pixel Color": pixel_color,
-                    "Pixel Confidence": round(
-                        pixel_confidence,
-                        2
-                    ),
-                    "CNN Color": cnn_color,
-                    "CNN Confidence": round(
-                        cnn_confidence,
-                        2
-                    ),
-                    "Blue Pixels %": round(
-                        blue_pixel_percentage,
-                        2
-                    ),
-                    "Black Pixels %": round(
-                        black_pixel_percentage,
-                        2
-                    ),
-                    "Blue Region %": round(
-                        blue_region_percentage,
-                        2
-                    ),
-                    "Black Region %": round(
-                        black_region_percentage,
-                        2
-                    ),
-                    "Reason": reason
-                }
-            )
-
-        # =====================================================
-        # DRAW PEOPLE
-        # =====================================================
-
-        final_people = []
-
-        for person in people:
-
-            if not isinstance(
-                person,
-                dict
-            ):
-                continue
-
-            if "box" not in person:
-                continue
-
-            if "confidence" not in person:
-                continue
-
-            confidence = float(
-                person["confidence"]
-            )
-
-            # Very weak detections are ignored
             if confidence < 0.10:
                 continue
 
-            x1, y1, x2, y2 = person[
-                "box"
-            ]
+            # ---------------------------------------------
+            # VALIDATE BOX
+            # ---------------------------------------------
 
-            # Clamp coordinates
             x1 = max(
                 0,
                 min(
@@ -754,10 +533,280 @@ class CarColorPipeline:
                 )
             )
 
-            width = x2 - x1
-            height = y2 - y1
+            box_width = x2 - x1
+            box_height = y2 - y1
 
-            if width < 8 or height < 12:
+            if box_width < 15 or box_height < 12:
+                continue
+
+            # ---------------------------------------------
+            # CROP CAR
+            # ---------------------------------------------
+
+            crop = image[
+                y1:y2,
+                x1:x2
+            ]
+
+            if crop.size == 0:
+                continue
+
+            # ---------------------------------------------
+            # SAVE CROP FOR DEBUGGING
+            # ---------------------------------------------
+
+            debug_path = self._save_debug_crop(
+                crop,
+                cars + 1
+            )
+
+            # ---------------------------------------------
+            # COLOR PREDICTION
+            # ---------------------------------------------
+
+            try:
+
+                color_result = self.classifier.predict(
+                    crop
+                )
+
+                if not isinstance(color_result, dict):
+                    raise TypeError(
+                        "Classifier must return a dictionary."
+                    )
+
+            except Exception as exc:
+
+                print(
+                    "Color prediction failed:",
+                    exc
+                )
+
+                color_result = {
+                    "color": "unknown",
+                    "confidence": 0.0,
+                    "pixel_color": "unknown",
+                    "pixel_confidence": 0.0,
+                    "cnn_color": "unknown",
+                    "cnn_confidence": 0.0,
+                    "reason": "Color prediction failed",
+                    "blue_pixel_percentage": 0.0,
+                    "black_pixel_percentage": 0.0,
+                    "blue_region_percentage": 0.0,
+                    "black_region_percentage": 0.0
+                }
+
+            # ---------------------------------------------
+            # READ CLASSIFIER OUTPUT
+            # ---------------------------------------------
+
+            color_name = str(
+                color_result.get(
+                    "color",
+                    "unknown"
+                )
+            ).lower()
+
+            color_confidence = self._safe_float(
+                color_result.get(
+                    "confidence",
+                    0.0
+                )
+            )
+
+            pixel_color = str(
+                color_result.get(
+                    "pixel_color",
+                    "unknown"
+                )
+            )
+
+            pixel_confidence = self._safe_float(
+                color_result.get(
+                    "pixel_confidence",
+                    0.0
+                )
+            )
+
+            cnn_color = str(
+                color_result.get(
+                    "cnn_color",
+                    "unknown"
+                )
+            )
+
+            cnn_confidence = self._safe_float(
+                color_result.get(
+                    "cnn_confidence",
+                    0.0
+                )
+            )
+
+            reason = str(
+                color_result.get(
+                    "reason",
+                    ""
+                )
+            )
+
+            blue_pixel_percentage = self._safe_float(
+                color_result.get(
+                    "blue_pixel_percentage",
+                    0.0
+                )
+            )
+
+            black_pixel_percentage = self._safe_float(
+                color_result.get(
+                    "black_pixel_percentage",
+                    0.0
+                )
+            )
+
+            blue_region_percentage = self._safe_float(
+                color_result.get(
+                    "blue_region_percentage",
+                    0.0
+                )
+            )
+
+            black_region_percentage = self._safe_float(
+                color_result.get(
+                    "black_region_percentage",
+                    0.0
+                )
+            )
+
+            # ---------------------------------------------
+            # COUNT CAR
+            # ---------------------------------------------
+
+            cars += 1
+
+            if color_name == "blue":
+                blue_cars += 1
+            else:
+                other_cars += 1
+
+            # ---------------------------------------------
+            # DRAW CAR
+            # ---------------------------------------------
+
+            self._draw_car(
+                output,
+                (
+                    x1,
+                    y1,
+                    x2,
+                    y2
+                ),
+                color_name,
+                color_confidence
+            )
+
+            # ---------------------------------------------
+            # SAVE DETAILS
+            # ---------------------------------------------
+
+            car_details.append({
+                "Car": cars,
+                "Color": color_name,
+                "Confidence": round(
+                    color_confidence,
+                    2
+                ),
+                "Pixel Color": pixel_color,
+                "Pixel Confidence": round(
+                    pixel_confidence,
+                    2
+                ),
+                "CNN Color": cnn_color,
+                "CNN Confidence": round(
+                    cnn_confidence,
+                    2
+                ),
+                "Blue Pixels %": round(
+                    blue_pixel_percentage,
+                    2
+                ),
+                "Black Pixels %": round(
+                    black_pixel_percentage,
+                    2
+                ),
+                "Blue Region %": round(
+                    blue_region_percentage,
+                    2
+                ),
+                "Black Region %": round(
+                    black_region_percentage,
+                    2
+                ),
+                "Reason": reason,
+                "Debug Crop": debug_path
+            })
+
+        # =====================================================
+        # PROCESS PEOPLE
+        # =====================================================
+
+        final_people = []
+
+        for person in people:
+
+            if not isinstance(person, dict):
+                continue
+
+            if (
+                "box" not in person
+                or "confidence" not in person
+            ):
+                continue
+
+            confidence = self._safe_float(
+                person["confidence"]
+            )
+
+            if confidence < 0.10:
+                continue
+
+            x1, y1, x2, y2 = person["box"]
+
+            x1 = max(
+                0,
+                min(
+                    int(x1),
+                    image.shape[1] - 1
+                )
+            )
+
+            y1 = max(
+                0,
+                min(
+                    int(y1),
+                    image.shape[0] - 1
+                )
+            )
+
+            x2 = max(
+                0,
+                min(
+                    int(x2),
+                    image.shape[1]
+                )
+            )
+
+            y2 = max(
+                0,
+                min(
+                    int(y2),
+                    image.shape[0]
+                )
+            )
+
+            box_width = x2 - x1
+            box_height = y2 - y1
+
+            if box_width < 8 or box_height < 12:
                 continue
 
             person_data = {
@@ -779,16 +828,10 @@ class CarColorPipeline:
                 person_data
             )
 
-        # -----------------------------------------------------
-        # Final people count
-        # -----------------------------------------------------
-
-        people_count = len(
-            final_people
-        )
+        people_count = len(final_people)
 
         # =====================================================
-        # SUMMARY
+        # DRAW SUMMARY
         # =====================================================
 
         self._draw_summary(
@@ -801,23 +844,16 @@ class CarColorPipeline:
         )
 
         # =====================================================
-        # RETURN RESULT
+        # RETURN RESULTS
         # =====================================================
 
         return {
             "image": output,
-
             "cars": cars,
-
             "blue_cars": blue_cars,
-
             "other_cars": other_cars,
-
             "people": people_count,
-
             "traffic_lights": traffic_lights,
-
             "car_details": car_details,
-
             "people_details": final_people
         }

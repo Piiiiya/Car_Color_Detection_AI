@@ -1,3 +1,4 @@
+
 import cv2
 import numpy as np
 
@@ -10,6 +11,7 @@ class CarColorClassifier:
         img_size=(224, 224),
         id_to_label=None
     ):
+
         self.model = model
         self.img_size = img_size
 
@@ -31,6 +33,54 @@ class CarColorClassifier:
             14: "yellow"
         }
 
+        self.neutral_colors = {
+            "black",
+            "grey",
+            "silver",
+            "white"
+        }
+
+        self.chromatic_colors = {
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "purple",
+            "pink"
+        }
+
+        self.earth_colors = {
+            "beige",
+            "brown",
+            "gold",
+            "tan"
+        }
+
+    # ============================================================
+    # BODY REGION
+    # ============================================================
+
+    def _body_crop(self, image):
+
+        h, w = image.shape[:2]
+
+        if h < 20 or w < 20:
+            return image
+
+        x1 = int(w * 0.08)
+        x2 = int(w * 0.92)
+
+        y1 = int(h * 0.20)
+        y2 = int(h * 0.85)
+
+        body = image[y1:y2, x1:x2]
+
+        if body.size == 0:
+            return image
+
+        return body
+
     # ============================================================
     # CNN PREDICTION
     # ============================================================
@@ -48,9 +98,7 @@ class CarColorClassifier:
             cv2.COLOR_BGR2RGB
         )
 
-        x = rgb.astype(
-            np.float32
-        ) / 255.0
+        x = rgb.astype(np.float32) / 255.0
 
         x = np.expand_dims(
             x,
@@ -62,93 +110,28 @@ class CarColorClassifier:
             verbose=0
         )
 
-        prediction = np.asarray(
+        probabilities = np.asarray(
             prediction
         )[0]
 
         class_id = int(
-            np.argmax(prediction)
+            np.argmax(probabilities)
         )
-
-        confidence = float(
-            prediction[class_id]
-        ) * 100.0
 
         color = self.id_to_label.get(
             class_id,
             "unknown"
         )
 
-        return color, confidence
-
-    # ============================================================
-    # PERCENTAGE
-    # ============================================================
-
-    def _percentage(self, mask):
-
-        if mask is None:
-            return 0.0
-
-        total = mask.size
-
-        if total == 0:
-            return 0.0
-
-        return (
-            np.count_nonzero(mask)
-            / total
+        confidence = float(
+            probabilities[class_id]
         ) * 100.0
 
-    # ============================================================
-    # LARGEST CONNECTED REGION
-    # ============================================================
-
-    def _largest_component_percentage(
-        self,
-        mask
-    ):
-
-        if mask is None:
-            return 0.0
-
-        if np.count_nonzero(mask) == 0:
-            return 0.0
-
-        num_labels, labels, stats, centroids = (
-            cv2.connectedComponentsWithStats(
-                mask,
-                connectivity=8
-            )
-        )
-
-        if num_labels <= 1:
-            return 0.0
-
-        largest_area = 0
-
-        for i in range(1, num_labels):
-
-            area = stats[
-                i,
-                cv2.CC_STAT_AREA
-            ]
-
-            if area > largest_area:
-                largest_area = area
-
-        total_area = (
-            mask.shape[0] *
-            mask.shape[1]
-        )
-
-        if total_area == 0:
-            return 0.0
-
         return (
-            largest_area /
-            total_area
-        ) * 100.0
+            color,
+            confidence,
+            probabilities
+        )
 
     # ============================================================
     # PIXEL ANALYSIS
@@ -156,40 +139,20 @@ class CarColorClassifier:
 
     def _pixel_analysis(self, image):
 
-        h, w = image.shape[:2]
+        body = self._body_crop(image)
 
-        if h < 20 or w < 20:
+        if body is None or body.size == 0:
 
-            return {
-                "pixel_color": "unknown",
-                "pixel_confidence": 0.0,
-                "blue_pixel_percentage": 0.0,
-                "largest_color_region": 0.0,
-                "color_scores": {},
-                "percentages": {},
-                "largest_regions": {}
-            }
+            return self._empty_pixel_result()
 
-        # --------------------------------------------------------
-        # CENTER REGION
-        # --------------------------------------------------------
-
-        x1 = int(w * 0.08)
-        x2 = int(w * 0.92)
-
-        y1 = int(h * 0.12)
-        y2 = int(h * 0.92)
-
-        crop = image[
-            y1:y2,
-            x1:x2
-        ]
-
-        if crop.size == 0:
-            crop = image
+        body = cv2.resize(
+            body,
+            (300, 150),
+            interpolation=cv2.INTER_AREA
+        )
 
         hsv = cv2.cvtColor(
-            crop,
+            body,
             cv2.COLOR_BGR2HSV
         )
 
@@ -197,509 +160,289 @@ class CarColorClassifier:
         S = hsv[:, :, 1]
         V = hsv[:, :, 2]
 
-        # ========================================================
-        # COLOR MASKS
-        # ========================================================
+        total_pixels = H.size
 
-        masks = {}
-
-        # --------------------------------------------------------
-        # RED
-        # --------------------------------------------------------
-
-        red_mask = (
-            (
-                (H <= 10) |
-                (H >= 170)
-            )
-            &
-            (S >= 65)
-            &
-            (V >= 55)
-        )
-
-        masks["red"] = (
-            red_mask.astype(np.uint8) * 255
-        )
+        if total_pixels == 0:
+            return self._empty_pixel_result()
 
         # --------------------------------------------------------
-        # ORANGE
+        # COLOUR MASKS
         # --------------------------------------------------------
 
-        orange_mask = (
-            (H >= 10)
-            &
-            (H < 22)
-            &
-            (S >= 65)
-            &
-            (V >= 55)
-        )
+        masks = {
 
-        masks["orange"] = (
-            orange_mask.astype(np.uint8) * 255
-        )
+            "red": (
+                ((H <= 10) | (H >= 170))
+                & (S >= 55)
+                & (V >= 40)
+            ),
 
-        # --------------------------------------------------------
-        # YELLOW
-        # --------------------------------------------------------
+            "orange": (
+                (H > 10)
+                & (H <= 22)
+                & (S >= 55)
+                & (V >= 40)
+            ),
 
-        yellow_mask = (
-            (H >= 22)
-            &
-            (H < 38)
-            &
-            (S >= 55)
-            &
-            (V >= 65)
-        )
+            "yellow": (
+                (H > 22)
+                & (H <= 38)
+                & (S >= 50)
+                & (V >= 55)
+            ),
 
-        masks["yellow"] = (
-            yellow_mask.astype(np.uint8) * 255
-        )
+            "green": (
+                (H > 38)
+                & (H < 85)
+                & (S >= 50)
+                & (V >= 40)
+            ),
 
-        # --------------------------------------------------------
-        # GREEN
-        # --------------------------------------------------------
+            "blue": (
+                (H >= 85)
+                & (H <= 135)
+                & (S >= 45)
+                & (V >= 35)
+            ),
 
-        green_mask = (
-            (H >= 38)
-            &
-            (H < 85)
-            &
-            (S >= 45)
-            &
-            (V >= 45)
-        )
+            "purple": (
+                (H > 135)
+                & (H < 170)
+                & (S >= 45)
+                & (V >= 35)
+            ),
 
-        masks["green"] = (
-            green_mask.astype(np.uint8) * 255
-        )
+            "black": (
+                (V <= 65)
+                & (S <= 130)
+            ),
 
-        # --------------------------------------------------------
-        # BLUE
-        #
-        # Blue/cyan/turquoise.
-        # --------------------------------------------------------
+            "white": (
+                (V >= 190)
+                & (S <= 55)
+            ),
 
-        blue_mask = (
-            (H >= 85)
-            &
-            (H <= 135)
-            &
-            (S >= 35)
-            &
-            (V >= 55)
-        )
+            "grey": (
+                (V > 65)
+                & (V < 190)
+                & (S <= 55)
+            ),
 
-        masks["blue"] = (
-            blue_mask.astype(np.uint8) * 255
-        )
-
-        # --------------------------------------------------------
-        # PURPLE
-        # --------------------------------------------------------
-
-        purple_mask = (
-            (H > 135)
-            &
-            (H < 170)
-            &
-            (S >= 50)
-            &
-            (V >= 50)
-        )
-
-        masks["purple"] = (
-            purple_mask.astype(np.uint8) * 255
-        )
-
-        # ========================================================
-        # NEUTRAL COLORS
-        # ========================================================
-
-        # --------------------------------------------------------
-        # BLACK
-        # --------------------------------------------------------
-
-        black_mask = (
-            (V <= 70)
-            &
-            (S <= 120)
-        )
-
-        masks["black"] = (
-            black_mask.astype(np.uint8) * 255
-        )
-
-        # --------------------------------------------------------
-        # WHITE
-        # --------------------------------------------------------
-
-        white_mask = (
-            (V >= 185)
-            &
-            (S <= 45)
-        )
-
-        masks["white"] = (
-            white_mask.astype(np.uint8) * 255
-        )
-
-        # --------------------------------------------------------
-        # GREY
-        # --------------------------------------------------------
-
-        grey_mask = (
-            (V > 70)
-            &
-            (V < 190)
-            &
-            (S <= 55)
-        )
-
-        masks["grey"] = (
-            grey_mask.astype(np.uint8) * 255
-        )
-
-        # --------------------------------------------------------
-        # BROWN
-        # --------------------------------------------------------
-
-        brown_mask = (
-            (
+            "brown": (
                 (H >= 5)
-                &
-                (H < 25)
+                & (H < 25)
+                & (S >= 35)
+                & (S < 180)
+                & (V >= 35)
+                & (V < 175)
             )
-            &
-            (S >= 35)
-            &
-            (S < 180)
-            &
-            (V >= 40)
-            &
-            (V < 190)
-        )
+        }
 
-        masks["brown"] = (
-            brown_mask.astype(np.uint8) * 255
-        )
-
-        # ========================================================
+        # --------------------------------------------------------
         # CLEAN MASKS
-        # ========================================================
+        # --------------------------------------------------------
 
         kernel = np.ones(
-            (5, 5),
-            np.uint8
+            (3, 3),
+            dtype=np.uint8
         )
 
-        for color in masks:
-
-            masks[color] = cv2.morphologyEx(
-                masks[color],
-                cv2.MORPH_OPEN,
-                kernel
-            )
-
-            masks[color] = cv2.morphologyEx(
-                masks[color],
-                cv2.MORPH_CLOSE,
-                kernel
-            )
-
-        # ========================================================
-        # PERCENTAGES
-        # ========================================================
-
         percentages = {}
-
         largest_regions = {}
 
         for color, mask in masks.items():
 
-            percentages[color] = (
-                self._percentage(mask)
+            mask_uint8 = (
+                mask.astype(np.uint8) * 255
             )
 
-            largest_regions[color] = (
-                self._largest_component_percentage(
-                    mask
+            mask_uint8 = cv2.morphologyEx(
+                mask_uint8,
+                cv2.MORPH_OPEN,
+                kernel
+            )
+
+            mask_uint8 = cv2.morphologyEx(
+                mask_uint8,
+                cv2.MORPH_CLOSE,
+                kernel
+            )
+
+            cleaned = mask_uint8 > 0
+
+            percentages[color] = (
+                np.count_nonzero(cleaned)
+                / total_pixels
+            ) * 100.0
+
+            num_labels, labels, stats, _ = (
+                cv2.connectedComponentsWithStats(
+                    mask_uint8,
+                    connectivity=8
                 )
             )
 
-        # ========================================================
-        # IMPORTANT SCORES
-        # ========================================================
+            largest_area = 0
 
-        black_percentage = percentages.get(
-            "black",
-            0.0
-        )
+            for i in range(1, num_labels):
 
-        black_region = largest_regions.get(
-            "black",
-            0.0
-        )
+                area = stats[
+                    i,
+                    cv2.CC_STAT_AREA
+                ]
 
-        blue_percentage = percentages.get(
-            "blue",
-            0.0
-        )
+                largest_area = max(
+                    largest_area,
+                    area
+                )
 
-        blue_region = largest_regions.get(
-            "blue",
-            0.0
-        )
-
-        grey_percentage = percentages.get(
-            "grey",
-            0.0
-        )
-
-        grey_region = largest_regions.get(
-            "grey",
-            0.0
-        )
-
-        white_percentage = percentages.get(
-            "white",
-            0.0
-        )
-
-        white_region = largest_regions.get(
-            "white",
-            0.0
-        )
-
-        # ========================================================
-        # SCORES
-        # ========================================================
-
-        black_score = (
-            black_percentage * 0.55
-            +
-            black_region * 0.45
-        )
-
-        blue_score = (
-            blue_percentage * 0.40
-            +
-            blue_region * 0.60
-        )
-
-        grey_score = (
-            grey_percentage * 0.55
-            +
-            grey_region * 0.45
-        )
-
-        white_score = (
-            white_percentage * 0.55
-            +
-            white_region * 0.45
-        )
+            largest_regions[color] = (
+                largest_area
+                / total_pixels
+            ) * 100.0
 
         # --------------------------------------------------------
-        # CHROMATIC SCORES
+        # PIXEL SCORES
         # --------------------------------------------------------
 
         color_scores = {}
 
-        for color in [
-            "red",
-            "orange",
-            "yellow",
-            "green",
-            "blue",
-            "purple",
-            "brown"
-        ]:
+        for color in masks:
+
+            percentage = percentages[color]
+
+            region = largest_regions[color]
 
             color_scores[color] = (
-                percentages[color] * 0.40
+                percentage * 0.55
                 +
-                largest_regions[color] * 0.60
+                region * 0.45
             )
 
-        color_scores["black"] = black_score
-        color_scores["grey"] = grey_score
-        color_scores["white"] = white_score
+        ranked = sorted(
+            color_scores.items(),
+            key=lambda item: item[1],
+            reverse=True
+        )
 
-        # ========================================================
-        # PIXEL DECISION
-        # ========================================================
+        if ranked:
 
-        # --------------------------------------------------------
-        # BLACK
-        # --------------------------------------------------------
-
-        if (
-            black_percentage >= 25
-            and
-            black_percentage >= (
-                blue_percentage * 1.20
-            )
-        ):
-
-            pixel_color = "black"
-
-            pixel_confidence = min(
-                99.0,
-                max(
-                    60.0,
-                    black_score
-                )
-            )
-
-            largest_region = black_region
-
-        # --------------------------------------------------------
-        # BLUE
-        # --------------------------------------------------------
-
-        elif (
-            blue_percentage >= 20
-            and
-            blue_region >= 5
-            and
-            blue_score > black_score
-            and
-            blue_score > grey_score
-        ):
-
-            pixel_color = "blue"
-
-            pixel_confidence = min(
-                99.0,
-                max(
-                    60.0,
-                    blue_score
-                )
-            )
-
-            largest_region = blue_region
-
-        # --------------------------------------------------------
-        # WHITE
-        # --------------------------------------------------------
-
-        elif (
-            white_percentage >= 30
-            and
-            white_score >= blue_score
-        ):
-
-            pixel_color = "white"
-
-            pixel_confidence = min(
-                99.0,
-                max(
-                    60.0,
-                    white_score
-                )
-            )
-
-            largest_region = white_region
-
-        # --------------------------------------------------------
-        # GREY
-        # --------------------------------------------------------
-
-        elif (
-            grey_percentage >= 25
-            and
-            grey_score >= blue_score
-        ):
-
-            pixel_color = "grey"
-
-            pixel_confidence = min(
-                99.0,
-                max(
-                    55.0,
-                    grey_score
-                )
-            )
-
-            largest_region = grey_region
-
-        # --------------------------------------------------------
-        # FALLBACK
-        # --------------------------------------------------------
+            pixel_color = ranked[0][0]
+            pixel_confidence = ranked[0][1]
 
         else:
 
-            pixel_color = max(
-                color_scores,
-                key=color_scores.get
-            )
-
-            pixel_confidence = min(
-                99.0,
-                max(
-                    0.0,
-                    color_scores[pixel_color]
-                )
-            )
-
-            largest_region = largest_regions.get(
-                pixel_color,
-                0.0
-            )
-
-        # ========================================================
-        # RETURN PIXEL ANALYSIS
-        # ========================================================
+            pixel_color = "unknown"
+            pixel_confidence = 0.0
 
         return {
+
             "pixel_color": pixel_color,
+
             "pixel_confidence": float(
                 pixel_confidence
             ),
+
             "blue_pixel_percentage": float(
-                blue_percentage
+                percentages.get("blue", 0.0)
             ),
+
+            "black_pixel_percentage": float(
+                percentages.get("black", 0.0)
+            ),
+
+            "blue_region_percentage": float(
+                largest_regions.get("blue", 0.0)
+            ),
+
+            "black_region_percentage": float(
+                largest_regions.get("black", 0.0)
+            ),
+
             "largest_color_region": float(
-                largest_region
+                largest_regions.get(
+                    pixel_color,
+                    0.0
+                )
             ),
+
             "color_scores": color_scores,
+
             "percentages": percentages,
+
             "largest_regions": largest_regions
         }
 
     # ============================================================
-    # MAIN PREDICT
+    # EMPTY RESULT
+    # ============================================================
+
+    @staticmethod
+    def _empty_pixel_result():
+
+        return {
+
+            "pixel_color": "unknown",
+            "pixel_confidence": 0.0,
+
+            "blue_pixel_percentage": 0.0,
+            "black_pixel_percentage": 0.0,
+
+            "blue_region_percentage": 0.0,
+            "black_region_percentage": 0.0,
+
+            "largest_color_region": 0.0,
+
+            "color_scores": {},
+            "percentages": {},
+            "largest_regions": {}
+        }
+
+    # ============================================================
+    # FINAL PREDICTION
     # ============================================================
 
     def predict(self, image):
 
-        if image is None:
+        if image is None or image.size == 0:
 
             return {
+
                 "color": "unknown",
                 "confidence": 0.0,
+
                 "pixel_color": "unknown",
                 "pixel_confidence": 0.0,
+
                 "cnn_color": "unknown",
                 "cnn_confidence": 0.0,
+
                 "blue_pixel_percentage": 0.0,
+                "black_pixel_percentage": 0.0,
+
+                "blue_region_percentage": 0.0,
+                "black_region_percentage": 0.0,
+
                 "largest_color_region": 0.0,
-                "reason": "No image"
+
+                "reason": "No image",
+
+                "color_scores": {}
             }
 
-        # ========================================================
-        # CNN
-        # ========================================================
+        # --------------------------------------------------------
+        # 1. CNN
+        # --------------------------------------------------------
 
-        cnn_color, cnn_confidence = (
-            self._cnn_predict(image)
-        )
+        (
+            cnn_color,
+            cnn_confidence,
+            cnn_probabilities
+        ) = self._cnn_predict(image)
 
-        # ========================================================
-        # PIXEL ANALYSIS
-        # ========================================================
+        # --------------------------------------------------------
+        # 2. PIXEL ANALYSIS
+        # --------------------------------------------------------
 
         pixel_result = self._pixel_analysis(
             image
@@ -713,14 +456,6 @@ class CarColorClassifier:
             "pixel_confidence"
         ]
 
-        blue_percentage = pixel_result[
-            "blue_pixel_percentage"
-        ]
-
-        largest_region = pixel_result[
-            "largest_color_region"
-        ]
-
         percentages = pixel_result[
             "percentages"
         ]
@@ -729,175 +464,166 @@ class CarColorClassifier:
             "largest_regions"
         ]
 
-        # ========================================================
-        # IMPORTANT VALUES
-        # ========================================================
+        color_scores = pixel_result[
+            "color_scores"
+        ]
 
-        black_pct = percentages.get(
-            "black",
-            0.0
-        )
-
-        black_region = largest_regions.get(
-            "black",
-            0.0
-        )
-
-        blue_pct = percentages.get(
-            "blue",
-            0.0
-        )
-
-        blue_region = largest_regions.get(
-            "blue",
-            0.0
-        )
-
-        # ========================================================
-        # FINAL DECISION
-        # ========================================================
+        # --------------------------------------------------------
+        # 3. INITIAL DECISION
+        # --------------------------------------------------------
 
         final_color = cnn_color
 
-        final_confidence = (
-            cnn_confidence
+        final_confidence = cnn_confidence
+
+        reason = "CNN primary prediction"
+
+        # --------------------------------------------------------
+        # 4. RANK PIXEL EVIDENCE
+        # --------------------------------------------------------
+
+        ranked_colors = sorted(
+            color_scores.items(),
+            key=lambda item: item[1],
+            reverse=True
         )
 
-        reason = "CNN prediction"
+        if ranked_colors:
 
-        # ========================================================
-        # 1. BLACK OVERRIDE
-        # ========================================================
+            best_pixel_color = ranked_colors[0][0]
 
-        if (
-            black_pct >= 25
-            and
-            black_region >= 5
-            and
-            black_pct >= (
-                blue_pct * 1.20
+            best_pixel_score = ranked_colors[0][1]
+
+            second_pixel_score = (
+                ranked_colors[1][1]
+                if len(ranked_colors) > 1
+                else 0.0
             )
-        ):
-
-            final_color = "black"
-
-            final_confidence = min(
-                99.0,
-                max(
-                    60.0,
-                    (
-                        black_pct * 0.55
-                        +
-                        black_region * 0.45
-                    )
-                )
-            )
-
-            reason = (
-                "Strong dark/black body evidence"
-            )
-
-        # ========================================================
-        # 2. BLUE OVERRIDE
-        # ========================================================
-
-        elif (
-            blue_pct >= 20
-            and
-            blue_region >= 5
-            and
-            blue_pct > black_pct
-            and
-            blue_region > black_region
-        ):
-
-            final_color = "blue"
-
-            final_confidence = min(
-                99.0,
-                max(
-                    60.0,
-                    (
-                        blue_pct * 0.40
-                        +
-                        blue_region * 0.60
-                    )
-                )
-            )
-
-            reason = (
-                "Strong continuous blue/cyan body region"
-            )
-
-        # ========================================================
-        # 3. STRONG PIXEL COLOR
-        # ========================================================
-
-        elif pixel_confidence >= 65:
-
-            final_color = pixel_color
-
-            final_confidence = min(
-                99.0,
-                max(
-                    55.0,
-                    pixel_confidence
-                )
-            )
-
-            reason = (
-                "Strong pixel color evidence"
-            )
-
-        # ========================================================
-        # 4. CNN FALLBACK
-        # ========================================================
 
         else:
 
-            final_color = cnn_color
+            best_pixel_color = "unknown"
 
-            final_confidence = (
-                cnn_confidence
-            )
+            best_pixel_score = 0.0
 
-            reason = (
-                "CNN prediction used as fallback"
-            )
+            second_pixel_score = 0.0
 
-        # ========================================================
-        # FINAL BLACK SAFETY CHECK
-        # ========================================================
+        score_margin = (
+            best_pixel_score - second_pixel_score
+        )
+
+        best_pixel_percentage = percentages.get(
+            best_pixel_color,
+            0.0
+        )
+
+        best_pixel_region = largest_regions.get(
+            best_pixel_color,
+            0.0
+        )
+
+        # --------------------------------------------------------
+        # 5. CHECK STRONG PIXEL EVIDENCE
+        # --------------------------------------------------------
+
+        strong_pixel_evidence = (
+
+            best_pixel_percentage >= 45.0
+
+            and best_pixel_region >= 18.0
+
+            and score_margin >= 12.0
+
+        )
+
+        # --------------------------------------------------------
+        # 6. CNN AND PIXEL AGREEMENT
+        # --------------------------------------------------------
 
         if (
-            final_color == "blue"
-            and
-            black_pct >= 35
-            and
-            black_region >= 8
-            and
-            black_pct > blue_pct
+            cnn_color == pixel_color
+            and pixel_confidence >= 12.0
         ):
 
-            final_color = "black"
+            final_color = cnn_color
 
-            final_confidence = min(
-                99.0,
-                max(
-                    65.0,
-                    black_pct
+            # Keep CNN probability separate from pixel score.
+            final_confidence = cnn_confidence
+
+            reason = "CNN and pixel analysis agree"
+
+        # --------------------------------------------------------
+        # 7. PIXEL OVERRIDE
+        # --------------------------------------------------------
+
+        elif strong_pixel_evidence:
+
+            # Pixel analysis may override only when CNN
+            # confidence is relatively low.
+            #
+            # This prevents weak pixel evidence from
+            # changing a reasonably confident CNN prediction.
+
+            if cnn_confidence < 40.0:
+
+                final_color = best_pixel_color
+
+                final_confidence = min(
+                    85.0,
+                    max(
+                        45.0,
+                        best_pixel_score
+                    )
                 )
-            )
+
+                reason = (
+                    "Strong dominant pixel evidence "
+                    "with low CNN confidence"
+                )
+
+            else:
+
+                reason = (
+                    "CNN retained because pixel evidence "
+                    "does not justify overriding it"
+                )
+
+        # --------------------------------------------------------
+        # 8. NEUTRAL COLOUR PROTECTION
+        # --------------------------------------------------------
+
+        elif (
+            cnn_color in self.neutral_colors
+            and cnn_confidence >= 30.0
+        ):
+
+            final_color = cnn_color
+
+            final_confidence = cnn_confidence
 
             reason = (
-                "Dark body evidence overrode blue reflection"
+                "CNN neutral prediction retained; "
+                "pixel evidence is inconclusive"
             )
 
-        # ========================================================
-        # RETURN
-        # ========================================================
+        # --------------------------------------------------------
+        # 9. FALLBACK
+        # --------------------------------------------------------
+
+        if final_color == "unknown":
+
+            final_color = cnn_color
+
+            final_confidence = cnn_confidence
+
+            reason = "CNN fallback"
+
+        # --------------------------------------------------------
+        # 10. RETURN
+        # --------------------------------------------------------
 
         return {
+
             "color": final_color,
 
             "confidence": float(
@@ -910,23 +636,43 @@ class CarColorClassifier:
                 pixel_confidence
             ),
 
-            "blue_pixel_percentage": float(
-                blue_percentage
-            ),
-
-            "largest_color_region": float(
-                largest_region
-            ),
-
             "cnn_color": cnn_color,
 
             "cnn_confidence": float(
                 cnn_confidence
             ),
 
+            "blue_pixel_percentage": float(
+                pixel_result[
+                    "blue_pixel_percentage"
+                ]
+            ),
+
+            "black_pixel_percentage": float(
+                pixel_result[
+                    "black_pixel_percentage"
+                ]
+            ),
+
+            "blue_region_percentage": float(
+                pixel_result[
+                    "blue_region_percentage"
+                ]
+            ),
+
+            "black_region_percentage": float(
+                pixel_result[
+                    "black_region_percentage"
+                ]
+            ),
+
+            "largest_color_region": float(
+                pixel_result[
+                    "largest_color_region"
+                ]
+            ),
+
             "reason": reason,
 
-            "color_scores": pixel_result[
-                "color_scores"
-            ]
+            "color_scores": color_scores
         }
