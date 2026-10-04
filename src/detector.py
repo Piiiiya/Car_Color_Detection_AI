@@ -1,405 +1,282 @@
 
-import cv2
 import numpy as np
-
+from pathlib import Path
 from ultralytics import YOLO
 
 
 class VehicleDetector:
     """
-    Detects cars, people, and traffic lights in traffic images.
+    YOLO vehicle detector with full-image and tiled inference.
 
-    Features:
+    Supports:
     - Car detection
     - Person detection
-    - Traffic light detection
-    - Tiled person detection for large images
-    - Duplicate detection filtering
-    - CPU-only inference
-    - Dictionary output compatible with CarColorPipeline
+    - Traffic-light detection
+    - Duplicate removal
+    - detect() and detect_all() compatibility
+    - Count and detection-list outputs
     """
 
-    # COCO class IDs
-    PERSON_CLASS_ID = 0
-    CAR_CLASS_ID = 2
-    TRAFFIC_LIGHT_CLASS_ID = 9
+    PERSON_CLASS = 0
+    CAR_CLASS = 2
+    TRAFFIC_LIGHT_CLASS = 9
 
     def __init__(
         self,
         model_path="yolo26s.pt",
-        confidence=0.25,
-        iou_threshold=0.45,
-        max_detections=300,
+        conf=0.25,
+        iou=0.45,
+        max_det=300,
         device="cpu",
+        tile_size=960,
+        tile_overlap=0.25,
     ):
+        self.model_path = Path(model_path)
 
-        self.model_path = model_path
-        self.confidence = confidence
-        self.iou_threshold = iou_threshold
-        self.max_detections = max_detections
+        if not self.model_path.is_absolute():
+            self.model_path = (
+                Path(__file__).resolve().parent.parent
+                / self.model_path
+            )
+
+        if not self.model_path.exists():
+            raise FileNotFoundError(
+                f"YOLO model not found: {self.model_path}"
+            )
+
+        self.conf = float(conf)
+        self.iou = float(iou)
+        self.max_det = int(max_det)
         self.device = device
+        self.tile_size = int(tile_size)
+        self.tile_overlap = float(tile_overlap)
 
-        self.model = YOLO(self.model_path)
+        self.model = YOLO(str(self.model_path))
 
         print("VehicleDetector initialized successfully.")
         print(f"YOLO model: {self.model_path}")
         print(f"Inference device: {self.device}")
+        print(f"Tile size: {self.tile_size}")
+        print(f"Tile overlap: {self.tile_overlap}")
 
-    # ========================================================
-    # GENERAL YOLO PREDICTION
-    # ========================================================
+    # =========================================================
+    # IMAGE VALIDATION
+    # =========================================================
+
+    @staticmethod
+    def _validate_image(image):
+        if image is None:
+            raise ValueError("Input image is None.")
+
+        if not isinstance(image, np.ndarray):
+            raise TypeError(
+                "Input image must be a NumPy array."
+            )
+
+        if image.ndim != 3 or image.shape[2] != 3:
+            raise ValueError(
+                "Input image must have shape (height, width, 3)."
+            )
+
+        if image.size == 0:
+            raise ValueError("Input image is empty.")
+
+    # =========================================================
+    # TILE GENERATION
+    # =========================================================
+
+    def _generate_tiles(self, image):
+        height, width = image.shape[:2]
+
+        tile_size = min(
+            self.tile_size,
+            height,
+            width
+        )
+
+        if height <= tile_size and width <= tile_size:
+            return [(0, 0, width, height)]
+
+        stride = max(
+            1,
+            int(tile_size * (1.0 - self.tile_overlap))
+        )
+
+        def positions(length):
+            if length <= tile_size:
+                return [0]
+
+            result = list(
+                range(0, length - tile_size + 1, stride)
+            )
+
+            final_position = length - tile_size
+
+            if result[-1] != final_position:
+                result.append(final_position)
+
+            return result
+
+        x_positions = positions(width)
+        y_positions = positions(height)
+
+        tiles = []
+
+        for y1 in y_positions:
+            for x1 in x_positions:
+                x2 = min(x1 + tile_size, width)
+                y2 = min(y1 + tile_size, height)
+
+                tiles.append((x1, y1, x2, y2))
+
+        return tiles
+
+    # =========================================================
+    # YOLO INFERENCE
+    # =========================================================
 
     def _predict(
         self,
         image,
-        conf=0.25,
+        confidence=None,
         imgsz=1280,
-        iou=0.45,
-        max_det=300,
-        classes=None,
     ):
+        confidence = (
+            self.conf
+            if confidence is None
+            else float(confidence)
+        )
 
-        if image is None or not isinstance(image, np.ndarray):
-            return []
+        return self.model.predict(
+            source=image,
+            conf=confidence,
+            iou=self.iou,
+            imgsz=imgsz,
+            max_det=self.max_det,
+            device=self.device,
+            verbose=False,
+        )
 
-        if image.size == 0:
-            return []
-
-        try:
-
-            results = self.model.predict(
-                source=image,
-                conf=conf,
-                imgsz=imgsz,
-                iou=iou,
-                max_det=max_det,
-                classes=classes,
-                device=self.device,
-                verbose=False,
-            )
-
-            return results
-
-        except Exception as error:
-
-            print(f"YOLO prediction error: {error}")
-            return []
-
-    # ========================================================
-    # EXTRACT DETECTION BOXES
-    # ========================================================
+    # =========================================================
+    # EXTRACT DETECTIONS
+    # =========================================================
 
     @staticmethod
     def _extract_detections(
         results,
-        image_width,
-        image_height,
+        offset_x=0,
+        offset_y=0,
+        allowed_classes=None,
     ):
-
         detections = []
 
-        if results is None:
-            return detections
-
-        if not isinstance(results, (list, tuple)):
-            results = [results]
-
         for result in results:
-
-            if result is None or result.boxes is None:
+            if result.boxes is None:
                 continue
 
-            boxes = result.boxes
+            for box in result.boxes:
+                class_id = int(box.cls[0].item())
+                confidence = float(box.conf[0].item())
 
-            if len(boxes) == 0:
-                continue
-
-            xyxy = boxes.xyxy.cpu().numpy()
-            confidences = boxes.conf.cpu().numpy()
-            class_ids = boxes.cls.cpu().numpy().astype(int)
-
-            for box, confidence, class_id in zip(
-                xyxy,
-                confidences,
-                class_ids,
-            ):
-
-                x1, y1, x2, y2 = map(int, box)
-
-                x1 = max(0, min(x1, image_width - 1))
-                y1 = max(0, min(y1, image_height - 1))
-                x2 = max(0, min(x2, image_width))
-                y2 = max(0, min(y2, image_height))
-
-                if x2 <= x1 or y2 <= y1:
+                if (
+                    allowed_classes is not None
+                    and class_id not in allowed_classes
+                ):
                     continue
 
-                class_name = result.names.get(
-                    int(class_id),
-                    str(class_id),
+                x1, y1, x2, y2 = (
+                    box.xyxy[0].cpu().numpy().tolist()
                 )
 
-                detections.append(
-                    {
-                        "bbox": (x1, y1, x2, y2),
-                        "confidence": float(confidence),
-                        "class_id": int(class_id),
-                        "class_name": str(class_name).lower(),
-                    }
+                coordinates = (
+                    int(round(x1 + offset_x)),
+                    int(round(y1 + offset_y)),
+                    int(round(x2 + offset_x)),
+                    int(round(y2 + offset_y)),
                 )
+
+                detections.append({
+                    "box": coordinates,
+                    "bbox": coordinates,
+                    "confidence": confidence,
+                    "class_id": class_id,
+                })
 
         return detections
 
-    # ========================================================
-    # DETECT CARS
-    # ========================================================
-
-    def _detect_cars(self, image):
-
-        height, width = image.shape[:2]
-
-        results = self._predict(
-            image=image,
-            conf=0.30,
-            imgsz=1536,
-            iou=self.iou_threshold,
-            max_det=self.max_detections,
-            classes=[self.CAR_CLASS_ID],
-        )
-
-        detections = self._extract_detections(
-            results,
-            width,
-            height,
-        )
-
-        cars = [
-            detection
-            for detection in detections
-            if detection["class_id"] == self.CAR_CLASS_ID
-        ]
-
-        return cars
-
-    # ========================================================
-    # DETECT PEOPLE
-    # ========================================================
-
-    def _detect_people(self, image):
-
-        height, width = image.shape[:2]
-
-        # Full-image detection
-        full_results = self._predict(
-            image=image,
-            conf=0.25,
-            imgsz=1536,
-            iou=self.iou_threshold,
-            max_det=self.max_detections,
-            classes=[self.PERSON_CLASS_ID],
-        )
-
-        full_detections = self._extract_detections(
-            full_results,
-            width,
-            height,
-        )
-
-        people = [
-            detection
-            for detection in full_detections
-            if detection["class_id"] == self.PERSON_CLASS_ID
-        ]
-
-        # Tiled detection for smaller people in large images
-        rows = 3
-        cols = 4
-        overlap = 0.25
-
-        tile_height = int(
-            height / (rows - (rows - 1) * overlap)
-        )
-
-        tile_width = int(
-            width / (cols - (cols - 1) * overlap)
-        )
-
-        step_y = max(
-            1,
-            int(tile_height * (1 - overlap)),
-        )
-
-        step_x = max(
-            1,
-            int(tile_width * (1 - overlap)),
-        )
-
-        for row in range(rows):
-
-            for col in range(cols):
-
-                x1 = col * step_x
-                y1 = row * step_y
-
-                x2 = min(
-                    x1 + tile_width,
-                    width,
-                )
-
-                y2 = min(
-                    y1 + tile_height,
-                    height,
-                )
-
-                # Ensure the last tiles reach image boundaries
-                if col == cols - 1:
-                    x2 = width
-
-                if row == rows - 1:
-                    y2 = height
-
-                if x2 <= x1 or y2 <= y1:
-                    continue
-
-                tile = image[y1:y2, x1:x2]
-
-                if tile.size == 0:
-                    continue
-
-                tile_results = self._predict(
-                    image=tile,
-                    conf=0.25,
-                    imgsz=1280,
-                    iou=self.iou_threshold,
-                    max_det=self.max_detections,
-                    classes=[self.PERSON_CLASS_ID],
-                )
-
-                tile_detections = self._extract_detections(
-                    tile_results,
-                    tile.shape[1],
-                    tile.shape[0],
-                )
-
-                for detection in tile_detections:
-
-                    if (
-                        detection["class_id"]
-                        != self.PERSON_CLASS_ID
-                    ):
-                        continue
-
-                    bx1, by1, bx2, by2 = detection["bbox"]
-
-                    # Convert tile coordinates to full-image coordinates
-                    detection["bbox"] = (
-                        bx1 + x1,
-                        by1 + y1,
-                        bx2 + x1,
-                        by2 + y1,
-                    )
-
-                    people.append(detection)
-
-        # Remove duplicate detections
-        people = self._remove_duplicates(
-            people,
-            iou_threshold=0.45,
-        )
-
-        return people
-
-    # ========================================================
-    # DETECT TRAFFIC LIGHTS
-    # ========================================================
-
-    def _detect_traffic_lights(self, image):
-
-        height, width = image.shape[:2]
-
-        results = self._predict(
-            image=image,
-            conf=0.20,
-            imgsz=1280,
-            iou=self.iou_threshold,
-            max_det=self.max_detections,
-            classes=[self.TRAFFIC_LIGHT_CLASS_ID],
-        )
-
-        detections = self._extract_detections(
-            results,
-            width,
-            height,
-        )
-
-        traffic_lights = [
-            detection
-            for detection in detections
-            if (
-                detection["class_id"]
-                == self.TRAFFIC_LIGHT_CLASS_ID
-            )
-        ]
-
-        return traffic_lights
-
-    # ========================================================
-    # CALCULATE INTERSECTION OVER UNION
-    # ========================================================
+    # =========================================================
+    # BOX GEOMETRY
+    # =========================================================
 
     @staticmethod
-    def _calculate_iou(box1, box2):
+    def _box_area(box):
+        x1, y1, x2, y2 = box
 
-        x1 = max(box1[0], box2[0])
-        y1 = max(box1[1], box2[1])
-
-        x2 = min(box1[2], box2[2])
-        y2 = min(box1[3], box2[3])
-
-        intersection_width = max(
-            0,
-            x2 - x1,
+        return (
+            max(0, x2 - x1)
+            * max(0, y2 - y1)
         )
 
-        intersection_height = max(
-            0,
-            y2 - y1,
+    @staticmethod
+    def _iou(box_a, box_b):
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+
+        ix1 = max(ax1, bx1)
+        iy1 = max(ay1, by1)
+        ix2 = min(ax2, bx2)
+        iy2 = min(ay2, by2)
+
+        intersection = (
+            max(0, ix2 - ix1)
+            * max(0, iy2 - iy1)
         )
 
-        intersection_area = (
-            intersection_width * intersection_height
-        )
+        area_a = VehicleDetector._box_area(box_a)
+        area_b = VehicleDetector._box_area(box_b)
 
-        area1 = (
-            max(0, box1[2] - box1[0])
-            * max(0, box1[3] - box1[1])
-        )
+        union = area_a + area_b - intersection
 
-        area2 = (
-            max(0, box2[2] - box2[0])
-            * max(0, box2[3] - box2[1])
-        )
-
-        union_area = (
-            area1 + area2 - intersection_area
-        )
-
-        if union_area <= 0:
+        if union <= 0:
             return 0.0
 
-        return intersection_area / union_area
+        return intersection / union
 
-    # ========================================================
-    # REMOVE DUPLICATE DETECTIONS
-    # ========================================================
+    @staticmethod
+    def _containment_ratio(small_box, large_box):
+        sx1, sy1, sx2, sy2 = small_box
+        lx1, ly1, lx2, ly2 = large_box
 
-    @classmethod
+        ix1 = max(sx1, lx1)
+        iy1 = max(sy1, ly1)
+        ix2 = min(sx2, lx2)
+        iy2 = min(sy2, ly2)
+
+        intersection = (
+            max(0, ix2 - ix1)
+            * max(0, iy2 - iy1)
+        )
+
+        small_area = VehicleDetector._box_area(
+            small_box
+        )
+
+        if small_area <= 0:
+            return 0.0
+
+        return intersection / small_area
+
+    # =========================================================
+    # DUPLICATE REMOVAL
+    # =========================================================
+
     def _remove_duplicates(
-        cls,
+        self,
         detections,
-        iou_threshold=0.45,
+        iou_threshold=0.50,
+        containment_threshold=0.85,
+        suppress_contained=True,
     ):
-
         if not detections:
             return []
 
@@ -411,94 +288,265 @@ class VehicleDetector:
 
         kept = []
 
-        for detection in detections:
+        for candidate in detections:
+            candidate_box = candidate["box"]
+            candidate_area = self._box_area(
+                candidate_box
+            )
 
-            is_duplicate = False
+            if candidate_area <= 0:
+                continue
 
-            for existing in kept:
+            duplicate = False
 
-                overlap = cls._calculate_iou(
-                    detection["bbox"],
-                    existing["bbox"],
+            for accepted in kept:
+                accepted_box = accepted["box"]
+
+                overlap = self._iou(
+                    candidate_box,
+                    accepted_box
                 )
 
                 if overlap >= iou_threshold:
-                    is_duplicate = True
+                    duplicate = True
                     break
 
-            if not is_duplicate:
-                kept.append(detection)
+                if not suppress_contained:
+                    continue
+
+                accepted_area = self._box_area(
+                    accepted_box
+                )
+
+                if accepted_area <= 0:
+                    continue
+
+                smaller_area = min(
+                    candidate_area,
+                    accepted_area
+                )
+
+                larger_area = max(
+                    candidate_area,
+                    accepted_area
+                )
+
+                area_ratio = (
+                    smaller_area / larger_area
+                )
+
+                if area_ratio > 0.65:
+                    continue
+
+                containment = self._containment_ratio(
+                    candidate_box,
+                    accepted_box
+                )
+
+                reverse_containment = (
+                    self._containment_ratio(
+                        accepted_box,
+                        candidate_box
+                    )
+                )
+
+                if (
+                    containment >= containment_threshold
+                    or reverse_containment
+                    >= containment_threshold
+                ):
+                    duplicate = True
+                    break
+
+            if not duplicate:
+                kept.append(candidate)
 
         return kept
 
-    # ========================================================
-    # MAIN DETECTION FUNCTION
-    # ========================================================
+    # =========================================================
+    # FULL IMAGE + TILED DETECTION
+    # =========================================================
 
-    def detect(self, image):
+    def _detect_class(
+        self,
+        image,
+        class_id,
+        confidence,
+        full_imgsz=1536,
+        tile_imgsz=1280,
+        suppress_contained=True,
+    ):
+        height, width = image.shape[:2]
 
-        if image is None:
-            raise ValueError(
-                "Input image cannot be None."
-            )
+        print("Full-image inference...")
 
-        if not isinstance(image, np.ndarray):
-            raise TypeError(
-                "Input image must be a NumPy array."
-            )
+        full_results = self._predict(
+            image,
+            confidence=confidence,
+            imgsz=full_imgsz,
+        )
 
-        if image.size == 0:
-            raise ValueError(
-                "Input image is empty."
-            )
-
-        print("Starting vehicle detection...")
-
-        # Detect cars
-        cars = self._detect_cars(image)
-
-        print(f"Cars detected: {len(cars)}")
-
-        # Detect people
-        people = self._detect_people(image)
-
-        print(f"People detected: {len(people)}")
-
-        # Detect traffic lights
-        traffic_lights = self._detect_traffic_lights(
-            image
+        full_detections = self._extract_detections(
+            full_results,
+            allowed_classes={class_id},
         )
 
         print(
-            f"Traffic lights detected: "
-            f"{len(traffic_lights)}"
+            f"Full-image detections: "
+            f"{len(full_detections)}"
         )
 
-        # Full-image YOLO results
-        main_result = self._predict(
+        tiles = self._generate_tiles(image)
+
+        print(f"Tiled inference: {len(tiles)} tiles")
+
+        tile_detections = []
+
+        for x1, y1, x2, y2 in tiles:
+            tile = image[y1:y2, x1:x2]
+
+            if tile.size == 0:
+                continue
+
+            tile_results = self._predict(
+                tile,
+                confidence=confidence,
+                imgsz=tile_imgsz,
+            )
+
+            detections = self._extract_detections(
+                tile_results,
+                offset_x=x1,
+                offset_y=y1,
+                allowed_classes={class_id},
+            )
+
+            tile_detections.extend(detections)
+
+        print(
+            f"Tile detections: {len(tile_detections)}"
+        )
+
+        all_detections = (
+            full_detections + tile_detections
+        )
+
+        print(
+            f"Combined raw detections: "
+            f"{len(all_detections)}"
+        )
+
+        # Clip all coordinates to image boundaries.
+        for detection in all_detections:
+            x1, y1, x2, y2 = detection["box"]
+
+            x1 = max(0, min(x1, width - 1))
+            y1 = max(0, min(y1, height - 1))
+            x2 = max(0, min(x2, width))
+            y2 = max(0, min(y2, height))
+
+            coordinates = (x1, y1, x2, y2)
+
+            detection["box"] = coordinates
+            detection["bbox"] = coordinates
+
+        all_detections = [
+            detection
+            for detection in all_detections
+            if (
+                detection["box"][2]
+                > detection["box"][0]
+                and detection["box"][3]
+                > detection["box"][1]
+            )
+        ]
+
+        final_detections = self._remove_duplicates(
+            all_detections,
+            iou_threshold=0.50,
+            containment_threshold=0.85,
+            suppress_contained=suppress_contained,
+        )
+
+        print(
+            f"Detections after duplicate removal: "
+            f"{len(final_detections)}"
+        )
+
+        return final_detections
+
+    # =========================================================
+    # MAIN DETECTION
+    # =========================================================
+
+    def detect(self, image):
+        self._validate_image(image)
+
+        print("\nStarting vehicle detection...\n")
+
+        print("Detecting cars...")
+
+        cars = self._detect_class(
             image=image,
-            conf=self.confidence,
-            imgsz=1536,
-            iou=self.iou_threshold,
-            max_det=self.max_detections,
+            class_id=self.CAR_CLASS,
+            confidence=0.30,
+            full_imgsz=1536,
+            tile_imgsz=1280,
+            suppress_contained=True,
         )
 
-        # IMPORTANT:
-        # Return a dictionary because pipeline.py expects one.
+        print("\nDetecting people...")
+
+        people = self._detect_class(
+            image=image,
+            class_id=self.PERSON_CLASS,
+            confidence=0.25,
+            full_imgsz=1536,
+            tile_imgsz=1280,
+            suppress_contained=False,
+        )
+
+        print("\nDetecting traffic lights...")
+
+        traffic_lights = self._detect_class(
+            image=image,
+            class_id=self.TRAFFIC_LIGHT_CLASS,
+            confidence=0.20,
+            full_imgsz=1536,
+            tile_imgsz=1280,
+            suppress_contained=False,
+        )
+
+        car_count = len(cars)
+        person_count = len(people)
+        traffic_light_count = len(traffic_lights)
+
+        total_objects = (
+            car_count
+            + person_count
+            + traffic_light_count
+        )
+
+        print("\nDetection completed.")
+
         return {
-            "main_result": main_result,
+            # Detection lists
             "cars": cars,
             "people": people,
             "traffic_lights": traffic_lights,
-            "car_count": len(cars),
-            "people_count": len(people),
-            "traffic_light_count": len(traffic_lights),
+            "main_result": traffic_lights,
+
+            # Counts expected by test_detector.py
+            "car_count": car_count,
+            "person_count": person_count,
+            "people_count": person_count,
+            "traffic_light_count": traffic_light_count,
+            "total_objects": total_objects,
         }
 
-    # ========================================================
-    # DETECT ALL OBJECTS
-    # ========================================================
+    # =========================================================
+    # BACKWARD COMPATIBILITY
+    # =========================================================
 
     def detect_all(self, image):
-
         return self.detect(image)

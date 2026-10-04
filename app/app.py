@@ -1,22 +1,27 @@
+
 import os
 import sys
 from pathlib import Path
 
 # ================================================================
 # CPU SETTINGS
-# Set these before importing TensorFlow, PyTorch or Ultralytics
+# Must be set before importing deep-learning libraries
 # ================================================================
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["TF_NUM_INTRAOP_THREADS"] = "2"
+os.environ["TF_NUM_INTEROP_THREADS"] = "2"
+
+# ================================================================
+# LIGHTWEIGHT IMPORTS
+# ================================================================
 
 import cv2
 import numpy as np
 import pandas as pd
 import streamlit as st
-import tensorflow as tf
-import torch
 
 # ================================================================
 # PAGE CONFIGURATION
@@ -27,20 +32,6 @@ st.set_page_config(
     page_icon="🚘",
     layout="wide"
 )
-
-# ================================================================
-# CPU CONFIGURATION
-# ================================================================
-
-try:
-    tf.config.set_visible_devices([], "GPU")
-except Exception:
-    pass
-
-try:
-    torch.set_num_threads(2)
-except Exception:
-    pass
 
 # ================================================================
 # PROJECT PATHS
@@ -56,10 +47,7 @@ COLOR_MODEL_PATH = (
     / "car_color_best.keras"
 )
 
-YOLO_MODEL_PATH = (
-    PROJECT_DIR
-    / "yolo26s.pt"
-)
+YOLO_MODEL_PATH = PROJECT_DIR / "yolo26s.pt"
 
 # ================================================================
 # ADD SRC TO PYTHON PATH
@@ -67,14 +55,6 @@ YOLO_MODEL_PATH = (
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
-
-# ================================================================
-# IMPORT PROJECT MODULES
-# ================================================================
-
-from detector import VehicleDetector
-from color_classifier import CarColorClassifier
-from pipeline import CarColorPipeline
 
 # ================================================================
 # COLOUR CLASS MAPPING
@@ -104,8 +84,7 @@ ID_TO_LABEL = {
 
 def get_count(value):
     """
-    Convert either a detection list or an integer
-    into a safe integer count.
+    Convert a detection list or integer into a safe count.
     """
 
     if value is None:
@@ -119,6 +98,7 @@ def get_count(value):
 
     try:
         return int(value)
+
     except (TypeError, ValueError):
         return 0
 
@@ -126,9 +106,6 @@ def get_count(value):
 def get_output_image(result):
     """
     Safely extract an output image from the pipeline result.
-
-    Uses explicit None checks because NumPy arrays cannot
-    be evaluated using Python's 'or' operator.
     """
 
     if isinstance(result, np.ndarray):
@@ -180,9 +157,7 @@ def get_metric_count(result, key, fallback_key=None):
     """
     Extract a count from the result.
 
-    Supports both:
-    - Integer counts
-    - Lists of detected objects
+    Supports integer counts and lists of detected objects.
     """
 
     if not isinstance(result, dict):
@@ -244,30 +219,75 @@ if not COLOR_MODEL_PATH.exists():
     )
     st.stop()
 
+
 if not YOLO_MODEL_PATH.exists():
     st.error(
         f"YOLO model not found:\n\n{YOLO_MODEL_PATH}"
     )
     st.stop()
 
+
 # ================================================================
-# LOAD MODELS
+# LOAD MODELS ON DEMAND
 # ================================================================
 
 @st.cache_resource
 def load_models():
+    """
+    Load TensorFlow, PyTorch, YOLO and the colour model
+    only when the user requests detection.
+
+    The cache prevents repeated model loading during
+    normal Streamlit reruns.
+    """
 
     # ------------------------------------------------------------
-    # YOLO DETECTOR
+    # IMPORT DEEP-LEARNING LIBRARIES
+    # ------------------------------------------------------------
+
+    import tensorflow as tf
+    import torch
+
+    # ------------------------------------------------------------
+    # CONFIGURE CPU
+    # ------------------------------------------------------------
+
+    try:
+        tf.config.set_visible_devices([], "GPU")
+
+    except Exception:
+        pass
+
+    try:
+        torch.set_num_threads(2)
+
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------
+    # IMPORT PROJECT MODULES
+    # ------------------------------------------------------------
+
+    from detector import VehicleDetector
+    from color_classifier import CarColorClassifier
+    from pipeline import CarColorPipeline
+
+    # ------------------------------------------------------------
+    # LOAD YOLO DETECTOR
     # ------------------------------------------------------------
 
     detector = VehicleDetector(
-        model_path=str(YOLO_MODEL_PATH),
-        confidence=0.20
+        model_path=YOLO_MODEL_PATH,
+        conf=0.25,
+        iou=0.45,
+        max_det=300,
+        device="cpu",
+        tile_size=960,
+        
     )
 
     # ------------------------------------------------------------
-    # COLOUR CLASSIFICATION MODEL
+    # LOAD COLOUR CLASSIFICATION MODEL
     # ------------------------------------------------------------
 
     color_model = tf.keras.models.load_model(
@@ -282,7 +302,7 @@ def load_models():
     )
 
     # ------------------------------------------------------------
-    # COMPLETE PIPELINE
+    # CREATE COMPLETE PIPELINE
     # ------------------------------------------------------------
 
     pipeline = CarColorPipeline(
@@ -292,18 +312,6 @@ def load_models():
 
     return detector, classifier, pipeline
 
-
-# ================================================================
-# LOAD MODELS SAFELY
-# ================================================================
-
-try:
-    detector, classifier, pipeline = load_models()
-
-except Exception as e:
-    st.error("Model loading failed.")
-    st.exception(e)
-    st.stop()
 
 # ================================================================
 # HEADER
@@ -339,6 +347,10 @@ with st.expander("🔧 Model Information"):
     )
 
     st.write("**Inference Device:** CPU")
+
+    st.info(
+        "Models are loaded when you click the Detect button."
+    )
 
 # ================================================================
 # IMAGE UPLOAD
@@ -406,19 +418,33 @@ if uploaded_file is not None:
         type="primary"
     ):
 
-        with st.spinner(
-            "Detecting cars, people, traffic lights and colours..."
-        ):
+        # --------------------------------------------------------
+        # LOAD MODELS
+        # --------------------------------------------------------
 
-            try:
-                result = pipeline.process(
-                    image_array
-                )
+        try:
+            with st.spinner("Loading AI models..."):
+                detector, classifier, pipeline = load_models()
 
-            except Exception as e:
-                st.error("Processing failed.")
-                st.exception(e)
-                st.stop()
+        except Exception as e:
+            st.error("Model loading failed.")
+            st.exception(e)
+            st.stop()
+
+        # --------------------------------------------------------
+        # RUN DETECTION
+        # --------------------------------------------------------
+
+        try:
+            with st.spinner(
+                "Detecting cars, people, traffic lights and colours..."
+            ):
+                result = pipeline.process(image_array)
+
+        except Exception as e:
+            st.error("Processing failed.")
+            st.exception(e)
+            st.stop()
 
         # ========================================================
         # VALIDATE PIPELINE RESULT
@@ -497,8 +523,10 @@ if uploaded_file is not None:
             "other_cars"
         )
 
-        # If the pipeline provides no colour-specific counts,
-        # show a neutral message rather than inventing values.
+        # --------------------------------------------------------
+        # CHECK COLOUR COUNTS
+        # --------------------------------------------------------
+
         colour_counts_available = (
             isinstance(result, dict)
             and (
@@ -566,11 +594,12 @@ if uploaded_file is not None:
             )
 
             if output_rgb is not None:
-
                 st.image(
                     output_rgb,
                     width="stretch",
-                    caption="Detected cars, people and traffic lights"
+                    caption=(
+                        "Detected cars, people and traffic lights"
+                    )
                 )
 
             else:
@@ -634,7 +663,10 @@ if uploaded_file is not None:
         if car_details is None:
             car_details = []
 
-        if isinstance(car_details, (list, tuple)) and len(car_details) > 0:
+        if (
+            isinstance(car_details, (list, tuple))
+            and len(car_details) > 0
+        ):
 
             st.subheader(
                 "🚗 Car Details"
@@ -658,7 +690,6 @@ if uploaded_file is not None:
                 st.exception(e)
 
         elif len(cars) > 0:
-
             st.subheader(
                 "🚗 Detected Car Information"
             )
@@ -668,7 +699,6 @@ if uploaded_file is not None:
             )
 
         else:
-
             st.info(
                 "No cars were detected in this image."
             )
@@ -678,7 +708,6 @@ if uploaded_file is not None:
         # ========================================================
 
         if people_count > 0:
-
             st.subheader(
                 "👥 People Detection"
             )
@@ -692,7 +721,6 @@ if uploaded_file is not None:
         # ========================================================
 
         if traffic_light_count > 0:
-
             st.subheader(
                 "🚦 Traffic Light Detection"
             )
