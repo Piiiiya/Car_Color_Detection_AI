@@ -1,50 +1,54 @@
-# Car Color Detection AI
+# 🚘 Car Colour Detection AI
 
-An AI-powered computer vision application that detects cars, identifies their colours, and counts vehicles and pedestrians in traffic images.
+An AI-powered computer vision application that detects vehicles, classifies car colours, counts people, and identifies traffic lights in traffic images.
 
-## Project Overview
+The project combines **YOLO object detection**, a **custom Convolutional Neural Network (CNN)**, and **Streamlit** to provide an interactive image-based detection system.
 
-Car Color Detection AI combines object detection and deep learning to analyze traffic scenes. The application identifies vehicles, classifies their colours, detects pedestrians, and displays the results through an interactive Streamlit interface.
+## 🌐 Live Demo
 
-## Key Features
+**[Click here to try Car Colour Detection AI](https://carcolordetectionai-bxzkyma9kdj4cghut9txu2.streamlit.app/)**
 
-- Car detection in traffic images.
-- Classification of 15 car colours.
-- Vehicle counting.
-- Pedestrian detection and counting.
-- Traffic light detection.
-- Colour-coded bounding boxes:
-  - Red rectangles for blue cars.
-  - Blue rectangles for cars of other colours.
-- Image upload and preview.
-- Annotated output image.
-- Interactive Streamlit GUI.
-- CPU-based inference support.
+The application is deployed on Streamlit Community Cloud.
 
-## Technologies Used
+## 📂 GitHub Repository
 
-- Python
-- TensorFlow / Keras
-- YOLO (Ultralytics)
-- OpenCV
-- NumPy
-- Streamlit
-- Pillow
+[View Source Code on GitHub](https://github.com/Piiiiya/Car_Color_Detection_AI)
 
-## Model Architecture
+## ✨ Features
 
-The project uses two main components:
+- 🚗 Detects cars in uploaded traffic images.
+- 🎨 Classifies vehicles into 15 colour categories.
+- 🔵 Identifies blue cars separately from other colours.
+- 👤 Detects and counts people.
+- 🚦 Detects traffic lights.
+- 🟥 Draws red bounding boxes around blue cars.
+- 🟦 Draws blue bounding boxes around other-colour cars.
+- 🟩 Uses green bounding boxes for people.
+- 🟨 Uses yellow bounding boxes for traffic lights.
+- 📊 Displays detection counts and car classification details.
+- 🖼️ Provides an annotated image preview through a Streamlit GUI.
+- ⚡ Uses CPU-based inference for deployment compatibility.
 
-1. **YOLO Object Detection:** Detects cars, pedestrians, and traffic lights in images.
-2. **CNN-Based Colour Classification:** Predicts the colour of detected cars using a trained deep learning model.
+## 🧠 Technologies Used
 
-The detection and classification results are combined through a processing pipeline to generate the final annotated image.
+| Technology | Purpose |
+|---|---|
+| Python | Core programming language |
+| YOLO | Object detection |
+| TensorFlow / Keras | Custom CNN colour classification |
+| OpenCV | Image processing and bounding boxes |
+| NumPy | Numerical operations |
+| Pandas | Detection result tables |
+| Streamlit | Interactive web interface |
+| PyTorch | YOLO inference backend |
 
-## Supported Car Colours
+## 🎨 Colour Classes
 
-Beige, Black, Blue, Brown, Gold, Green, Grey, Orange, Pink, Purple, Red, Silver, Tan, White, and Yellow.
+The custom CNN classifies cars into 15 colour categories:
 
-## Project Structure
+`Beige`, `Black`, `Blue`, `Brown`, `Gold`, `Green`, `Grey`, `Orange`, `Pink`, `Purple`, `Red`, `Silver`, `Tan`, `White`, `Yellow`
+
+## 🏗️ Project Structure
 
 ```text
 Car_Color_Detection_AI/
@@ -53,98 +57,98 @@ Car_Color_Detection_AI/
 │   └── app.py
 │
 ├── src/
-│   ├── color_classifier.py
-│   ├── config.py
 │   ├── detector.py
-│   ├── gradient_analyzer.py
+│   ├── color_classifier.py
 │   ├── pipeline.py
 │   ├── shade_detector.py
-│   └── test_detector.py
+│   └── gradient_analyzer.py
 │
 ├── models/
 │   └── car_color_best.keras
 │
-├── outputs/
-│   └── debug_detection.jpg
+├── notebooks/
+│   └── 01_dataset_exploration.ipynb
 │
 ├── data/
-│   ├── raw/
-│   └── processed/
 │
+├── outputs/
+│
+├── yolo26s.pt
 ├── requirements.txt
-├── packages.txt
-└── README.md
+├── README.md
+└── .gitignore
 ```
 
-*Note: The structure above is a guide. Update it if your final repository contains additional files or folders.*
-
-## Installation
+## ⚙️ Installation and Setup
 
 ### 1. Clone the repository
 
 ```bash
 git clone https://github.com/Piiiiya/Car_Color_Detection_AI.git
+```
+
+### 2. Navigate to the project directory
+
+```bash
 cd Car_Color_Detection_AI
 ```
 
-### 2. Create a virtual environment
+### 3. Create a virtual environment
 
 ```bash
 python -m venv .venv
 ```
 
-### 3. Activate the environment (Windows)
+### 4. Activate the environment
+
+**Windows PowerShell:**
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 
-### 4. Install dependencies
+### 5. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 5. Run the application
+### 6. Run the Streamlit application
 
 ```bash
-python -m streamlit run app/app.py
+streamlit run app/app.py
 ```
 
 The application will open in your browser.
 
-## How to Use
+## 🔍 How It Works
 
-1. Launch the Streamlit application.
-2. Upload a traffic image.
-3. Preview the input image.
-4. Click **Detect Cars & Colours**.
-5. View the detected vehicles, colour classifications, and pedestrian counts.
-6. Review the annotated output image.
+1. The user uploads a traffic image.
+2. YOLO detects cars, people, and traffic lights.
+3. Detected car regions are passed to the custom CNN.
+4. The CNN predicts the colour of each detected vehicle.
+5. The pipeline assigns bounding box colours based on vehicle classification.
+6. The application displays the annotated image, detection counts, and available car details.
 
-## Limitations
+## 📊 Model Performance
 
-- Detection accuracy depends on image quality, lighting, occlusion, and object size.
-- Small or partially hidden objects may not be detected.
-- Similar car colours can sometimes be confused.
-- Processing time depends on image resolution and available hardware.
-- Results may vary across different traffic scenes.
+The custom CNN achieved approximately **78.98% test accuracy** and a **0.74 macro F1-score** on the evaluated 15-class dataset.
 
-## Future Improvements
+Performance may vary depending on lighting conditions, vehicle size, occlusion, reflections, and image quality.
 
-- Real-time traffic video analysis.
-- Improved detection in low-light conditions.
-- Enhanced colour classification accuracy.
-- Vehicle tracking across video frames.
-- Traffic analytics dashboard.
-- Optimized inference for faster processing.
+## 🚀 Deployment
 
-## Project Status
+The application is hosted on **Streamlit Community Cloud**.
 
-Developed as part of an AI/ML internship project.
+🔗 **[Launch Live Application](https://carcolordetectionai-bxzkyma9kdj4cghut9txu2.streamlit.app/)**
 
-## Author
+## 👩‍💻 Author
 
 **Piya Shaikh**
 
-GitHub: [Piiiiya](https://github.com/Piiiiya)
+- GitHub: [Piiiiya](https://github.com/Piiiiya)
+- Project Repository: [Car Colour Detection AI](https://github.com/Piiiiya/Car_Color_Detection_AI)
+
+---
+
+*Developed as a Machine Learning and Deep Learning project to demonstrate object detection, image classification, computer vision, and web application deployment.*
